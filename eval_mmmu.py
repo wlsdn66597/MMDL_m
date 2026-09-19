@@ -20,6 +20,8 @@ import threading
 import time
 import traceback
 
+from PIL import Image
+
 # Must be set before importing vLLM; matches the working server environment.
 os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
@@ -50,6 +52,18 @@ OPEN_TEMPLATE = (
 
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def image_as_rgb(img):
+    """Preserve palette/alpha images by compositing transparency onto white."""
+    has_alpha = img.mode in ("RGBA", "LA") or (
+        img.mode == "P" and "transparency" in img.info
+    )
+    if not has_alpha:
+        return img.convert("RGB")
+    rgba = img.convert("RGBA")
+    white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    return Image.alpha_composite(white, rgba).convert("RGB")
 
 
 def mc_parse(raw, choices):
@@ -107,7 +121,7 @@ def build_message(ex):
     for i, img in images:
         label = {"type": "text", "text": f"Image {i}:"}
         buffer = io.BytesIO()
-        img.convert("RGB").save(buffer, format="PNG")
+        image_as_rgb(img).save(buffer, format="PNG")
         png = buffer.getvalue()
         uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
         content.extend([label, {"type": "image_url", "image_url": {"url": uri}}])

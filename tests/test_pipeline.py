@@ -7,6 +7,8 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from PIL import Image
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import eval_mmmu as runner
 from vendor.mmmu_eval_utils import eval_open, parse_open_response
@@ -14,6 +16,7 @@ from vendor.mmmu_eval_utils import eval_open, parse_open_response
 
 class TinyImage:
     width, height = 32, 32
+    mode, info = "RGB", {}
     def convert(self, _):
         return self
     def save(self, buffer, format):
@@ -29,6 +32,14 @@ def example(identifier="test", question_type="multiple-choice"):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_palette_transparency_is_composited_on_white(self):
+        img = Image.new("P", (1, 1))
+        img.putpalette([255, 0, 0] + [0, 0, 0] * 255)
+        img.info["transparency"] = 0
+        converted = runner.image_as_rgb(img)
+        self.assertEqual(converted.mode, "RGB")
+        self.assertEqual(converted.getpixel((0, 0)), (255, 255, 255))
+
     def test_images_and_no_gold_leak(self):
         ex = example()
         ex["answer"] = "SECRET_GOLD_ANSWER"
