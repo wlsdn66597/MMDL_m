@@ -60,7 +60,8 @@ class PipelineTests(unittest.TestCase):
         choices = {"A": "first", "B": "second"}
         answer, info = runner.mc_parse("Consider (A), but final answer: (B)", choices)
         self.assertEqual(answer, "B")
-        self.assertEqual(len(info["candidates"]), 2)
+        self.assertEqual(info["mode"], "explicit_final")
+        self.assertEqual(runner.mc_parse("**A**", choices)[0], "A")
         self.assertIsNone(runner.mc_parse("I cannot determine the answer.", choices)[0])
         self.assertIsNone(runner.mc_parse("", choices)[0])
 
@@ -79,6 +80,7 @@ class PipelineTests(unittest.TestCase):
                 return [r[key] for r in self.rows] if isinstance(key, str) else self.rows[key]
 
         incomplete = [False]
+        truncate_mc = [False]
         class FakeLLM:
             def __init__(self, **kwargs):
                 pass
@@ -88,9 +90,13 @@ class PipelineTests(unittest.TestCase):
                 results = []
                 for message in messages:
                     text = message[0]["content"][-1]["text"]
-                    response = "Final answer: (A)" if "Choices:" in text else "Final answer: 2"
+                    is_mc = "Choices:" in text
+                    response = ("Reasoning mentions (A) and (B)" if is_mc and truncate_mc[0]
+                                else "Final answer: (A)" if is_mc else "Final answer: 2")
                     results.append(SimpleNamespace(prompt_token_ids=[1], outputs=[SimpleNamespace(
-                        text=response, token_ids=[1, 2], finish_reason="stop", stop_reason=None)]))
+                        text=response, token_ids=[1, 2],
+                        finish_reason="length" if is_mc and truncate_mc[0] else "stop",
+                        stop_reason=None)]))
                 return results[:-1] if incomplete[0] else results
 
         dataset_module = ModuleType("datasets")
@@ -107,7 +113,7 @@ class PipelineTests(unittest.TestCase):
             args = SimpleNamespace(model_path=str(model), model_revision=runner.MODEL_REV,
                 data_root="MMMU/MMMU", cache_dir=None, limit_per_subject=0, check_only=False,
                 max_model_len=8192, gpu_memory_utilization=.85, batch_size=2,
-                min_pixels=65536, max_pixels=589824, max_tokens=2048, monitor_gpu="0")
+                min_pixels=65536, max_pixels=589824, max_tokens=256, monitor_gpu="0")
             modules = {"datasets": dataset_module, "huggingface_hub": hf_module, "vllm": vllm_module}
             with patch.dict(sys.modules, modules), patch("builtins.print"):
                 manifest = {"arguments": vars(args), "packages": {"vllm": "mock"},
@@ -120,6 +126,11 @@ class PipelineTests(unittest.TestCase):
                 runner.make_report(Path(tmp), manifest, summary)
                 self.assertIn("**900**", (Path(tmp) / "report_draft.md").read_text(encoding="utf-8"))
                 self.assertEqual(len((Path(tmp) / "predictions.jsonl").read_text().splitlines()), 900)
+                truncate_mc[0] = True
+                truncated_summary = runner.run(args, Path(tmp), manifest)
+                self.assertEqual(truncated_summary["unparsed"], 450)
+                self.assertEqual(truncated_summary["length_limited"], 450)
+                truncate_mc[0] = False
                 incomplete[0] = True
                 with self.assertRaisesRegex(RuntimeError, "output count mismatch"):
                     runner.run(args, Path(tmp), manifest)

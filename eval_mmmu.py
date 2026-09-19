@@ -40,13 +40,11 @@ RECIPE = dict(temperature=0.7, top_p=0.8, top_k=20,
 RECIPE_URL = "https://github.com/QwenLM/Qwen3-VL#evaluation-reproduction"
 MC_TEMPLATE = (
     "Question: {question}\n\nChoices:\n{choices}\n\n"
-    "Solve the question using the provided images and text. You may explain briefly. "
-    "End your response with 'Final answer: (X)', replacing X with the single best option letter."
+    "Answer with the single best option letter only. Do not include an explanation or any other text."
 )
 OPEN_TEMPLATE = (
     "Question: {question}\n\n"
-    "Solve the question using the provided images and text. You may explain briefly. "
-    "End your response with 'Final answer: <answer>', giving a concise final answer."
+    "Answer concisely with only the final answer. Do not include an explanation."
 )
 
 
@@ -68,6 +66,20 @@ def image_as_rgb(img):
 
 def mc_parse(raw, choices):
     """Adapted MMMU rules, with deterministic failure instead of random guessing."""
+    valid = "".join(re.escape(choice) for choice in choices)
+    explicit = re.findall(
+        rf"final\s+(?:answer|decision)\s*[:：]?\s*\(?([{valid}])\)?",
+        raw,
+        flags=re.I,
+    )
+    if explicit:
+        answer = explicit[-1].upper()
+        return answer, {"mode": "explicit_final", "candidates": explicit}
+    compact = raw.strip().strip("*`_ ")
+    exact = re.fullmatch(rf"\(?([{valid}])\)?[.。]?", compact, flags=re.I)
+    if exact:
+        answer = exact.group(1).upper()
+        return answer, {"mode": "exact_letter", "candidates": [answer]}
     response = raw
     for char in [",", ".", "!", "?", ";", ":", "'"]:
         response = response.strip(char)
@@ -187,7 +199,7 @@ def arguments():
                         help="0 = full 900; positive = development subset only")
     parser.add_argument("--check-only", action="store_true", help="Check selected inputs without loading model")
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--min-pixels", type=int, default=65536)
     parser.add_argument("--max-pixels", type=int, default=589824)
@@ -235,7 +247,7 @@ def make_report(outdir, manifest, summary):
               "Numbered images precede the text; `<image N>` references become `[Image N]`. No answer/explanation is included.",
               "The pinned model's chat template is saved as chat_template.txt; per-question inputs are in inputs.jsonl.",
               "", "Multiple choice:", "```text", MC_TEMPLATE, "```", "", "Open-ended:", "```text", OPEN_TEMPLATE, "```",
-              "Reason: allow a short explanation and specify a consistent final-answer format.",
+              "Reason: constrain the response to the directly scored answer and avoid unfinished repetitive reasoning.",
               "", "## 3. Generation Settings", "", "### 3.1 Sampling recipe", "",
               "| Parameter | Value |", "|---|---|", "| do_sample | True (vLLM: temperature > 0) |"]
     lines += [f"| {key} | {value} |" for key, value in RECIPE.items()]
@@ -369,6 +381,11 @@ def run(args, outdir, manifest):
                     raw = generated.text
                     if ex["question_type"] == "multiple-choice":
                         parsed, info = mc_parse(raw, choices)
+                        if generated.finish_reason == "length" and info["mode"] not in (
+                            "explicit_final", "exact_letter"
+                        ):
+                            info = dict(mode="truncated_unparsed", candidates=info["candidates"])
+                            parsed = None
                         correct = parsed is not None and eval_multi_choice(ex["answer"], parsed)
                     else:
                         parsed = sorted(parse_open_response(raw), key=lambda x: (type(x).__name__, str(x))) if raw.strip() else []
@@ -403,7 +420,7 @@ def run(args, outdir, manifest):
         raise RuntimeError("Macro/micro mismatch on balanced data")
     return dict(n=len(all_rows), subjects=subject_rows, macro_accuracy=macro, micro_accuracy=micro,
                 complete_900=len(all_rows) == 900,
-                unparsed=sum(row["parsing"]["mode"] == "unparsed" for row in all_rows),
+                unparsed=sum("unparsed" in row["parsing"]["mode"] for row in all_rows),
                 ambiguous_mc=sum(len(row["parsing"]["candidates"]) > 1 for row in all_rows),
                 length_limited=sum(row["finish_reason"] == "length" for row in all_rows),
                 model_load_seconds=model_seconds)

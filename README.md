@@ -55,6 +55,12 @@ cat results/smoke60/summary.json
 각 과목 첫 두 문항으로 구성된 편의 표본이므로 60문항 정확도는 전체 성능 추정치로 쓰지 않습니다.
 테스트에 주관식/다중 이미지 유형이 포함됐는지도 `inputs.jsonl`, `predictions.jsonl`에서 확인하세요.
 
+문항별 생성·파싱 이상을 요약하려면 다음을 실행합니다.
+
+```bash
+python scripts/audit_predictions.py results/smoke60/predictions.jsonl --tails 500
+```
+
 입력만 900문항 확인하고 싶다면 다음 별도 실행을 사용할 수 있습니다(GPU 추론 없음).
 
 ```bash
@@ -90,7 +96,7 @@ SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하�
 - 30개 과목 전체에서 각각 30개인지, 문항 ID 900개가 유일한지 검증.
 - Qwen Instruct 공식 평가 recipe: temperature 0.7, top_p 0.8, top_k 20,
   repetition_penalty 1.0, presence_penalty 1.5, seed 3407. 추론당 답변 1개.
-- 시작값: batch 2, 전체 문맥 8192 tokens, 출력 최대 2048 tokens,
+- 시작값: batch 2, 전체 문맥 8192 tokens, 출력 최대 256 tokens,
   이미지당 min_pixels 65,536 / max_pixels 589,824, 최대 이미지 7장,
   GPU memory utilization 0.85. 이는 작은 초기 실행을 위한 공학적 선택이며 최적 설정이 아닙니다.
 - 이미지의 실제 가로/세로는 모델 processor가 종횡비와 patch 규칙에 맞춰 처리합니다.
@@ -100,6 +106,8 @@ SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하�
 - `VLLM_USE_FLASHINFER_SAMPLER=0`은 이미 성공한 서버의 nvcc 부재 우회 설정을 유지합니다.
 - 공식 MC 파서의 무작위 fallback을 없애고 미파싱을 오답 처리합니다. 주관식은
   고정 commit의 공식 MMMU 파서/채점 함수를 사용합니다. 자세한 내용은 THIRD_PARTY.md.
+- MC 프롬프트는 선택지 문자 하나만, open 프롬프트는 간결한 최종 답만 요구합니다.
+  길이 제한에 걸렸고 명시적 최종 답도 없는 MC 응답은 중간에 언급된 문자를 채점하지 않습니다.
 - 정확히 같은 seed라도 라이브러리, GPU, 배치 구성을 바꾸면 출력이 달라질 수 있습니다.
 
 ## 데이터 경로와 체크포인트

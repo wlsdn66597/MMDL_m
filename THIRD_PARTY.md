@@ -11,12 +11,15 @@
 The upstream license is included as `vendor/MMMU_LICENSE`.
 
 `mc_parse()` in `eval_mmmu.py` adapts the upstream multiple-choice parser:
-the same bracket / standalone-letter / option-text matching order is used;
+explicit final-answer and exact-letter responses are checked first, followed by the
+same bracket / standalone-letter / option-text matching order;
 the last match is selected when several candidate options are found.
 Differences: no-match returns `None` (scored wrong), not a random option;
 empty option strings are not treated as matches; parse mode and candidate list are recorded.
 Open-ended extraction, normalization and scoring use the unmodified upstream functions.
 Empty model responses are always wrong. Predictions are never repaired using the gold answer.
+Length-truncated MC responses without an explicit final answer are scored wrong instead of
+using option letters mentioned in unfinished reasoning.
 Open-ended candidate lists are sorted only for stable JSON output; scoring is unchanged.
 
 This is a documented team pipeline, not a claim to reproduce every detail of Qwen's internal evaluation.
