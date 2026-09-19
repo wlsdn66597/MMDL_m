@@ -1,0 +1,10 @@
+# Package inventory only, not a lockfile. The existing MMDL environment is reused.
+# Do not blindly install/upgrade these on an already working CUDA/vLLM server.
+# Each evaluation saves its actual versions as requirements.freeze.txt.
+torch
+transformers
+vllm
+datasets
+huggingface-hub
+Pillow
+numpy

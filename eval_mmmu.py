@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""MMMU validation evaluation using vLLM chat; no training or environment changes."""
+import argparse
+import ast
+import base64
+from collections import Counter
+from datetime import datetime, timezone
+import hashlib
+import importlib.metadata
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shlex
+import subprocess
+import sys
+import threading
+import time
+import traceback
+
+# Must be set before importing vLLM; matches the working server environment.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+MODEL = "Qwen/Qwen3-VL-4B-Instruct"
+MODEL_REV = "ebb281ec70b05090aa6165b016eac8ec08e71b17"
+DATA_REV = "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68"
+PARSER_REV = "aa9b70da92c2825b3d544d1a11b36856bd92f6c3"
+SUBJECTS = """Accounting Agriculture Architecture_and_Engineering Art Art_Theory
+Basic_Medical_Science Biology Chemistry Clinical_Medicine Computer_Science
+Design Diagnostics_and_Laboratory_Medicine Economics Electronics Energy_and_Power
+Finance Geography History Literature Manage Marketing Materials Math
+Mechanical_Engineering Music Pharmacy Physics Psychology Public_Health Sociology""".split()
+RECIPE = dict(temperature=0.7, top_p=0.8, top_k=20,
+              repetition_penalty=1.0, presence_penalty=1.5, seed=3407)
+RECIPE_URL = "https://github.com/QwenLM/Qwen3-VL#evaluation-reproduction"
+MC_TEMPLATE = (
+    "Question: {question}\n\nChoices:\n{choices}\n\n"
+    "Solve the question using the provided images and text. You may explain briefly. "
+    "End your response with 'Final answer: (X)', replacing X with the single best option letter."
+)
+OPEN_TEMPLATE = (
+    "Question: {question}\n\n"
+    "Solve the question using the provided images and text. You may explain briefly. "
+    "End your response with 'Final answer: <answer>', giving a concise final answer."
+)
+
+
+def write_json(path, value):
+    Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def mc_parse(raw, choices):
+    """Adapted MMMU rules, with deterministic failure instead of random guessing."""
+    response = raw
+    for char in [",", ".", "!", "?", ";", ":", "'"]:
+        response = response.strip(char)
+    response = " " + response + " "
+    candidates = [c for c in choices if f"({c})" in response]
+    mode = "bracket"
+    if not candidates:
+        candidates = [c for c in choices if f" {c} " in response]
+        mode = "letter"
+    if not candidates and len(response.split()) > 5:
+        candidates = [c for c, answer in choices.items()
+                      if answer and answer.lower() in response.lower()]
+        mode = "option_text"
+    if not candidates:
+        return None, {"mode": "unparsed", "candidates": []}
+    def position(c):
+        if mode == "bracket":
+            return response.rfind(f"({c})")
+        if mode == "letter":
+            return response.rfind(f" {c} ")
+        return response.lower().rfind(choices[c].lower())
+    return max(candidates, key=position), {"mode": mode, "candidates": candidates}
+
+
+def build_message(ex):
+    """Numbered images first, followed by the question; labels preserve references."""
+    images = [(i, ex.get(f"image_{i}")) for i in range(1, 8)
+              if ex.get(f"image_{i}") is not None]
+    if not images:
+        raise ValueError(f"No images: {ex['id']}")
+    question_type = ex["question_type"]
+    if question_type not in ("multiple-choice", "open"):
+        raise ValueError(f"Unknown question type: {question_type}")
+    options = ex.get("options", [])
+    if isinstance(options, str):
+        options = ast.literal_eval(options) if options.strip() else []
+    choices = {chr(65 + i): str(value) for i, value in enumerate(options)}
+    if question_type == "multiple-choice" and len(choices) < 2:
+        raise ValueError(f"Invalid options: {ex['id']}")
+    available = {i for i, _ in images}
+    reference_text = ex["question"] + "\n" + "\n".join(choices.values())
+    refs = {int(i) for i in re.findall(r"<image\s+(\d+)>", reference_text, re.I)}
+    if not refs.issubset(available):
+        raise ValueError(f"Missing image reference: {ex['id']}: {refs - available}")
+    def relabel(text):
+        return re.sub(r"<image\s+(\d+)>", r"[Image \1]", text, flags=re.I)
+    template = MC_TEMPLATE if question_type == "multiple-choice" else OPEN_TEMPLATE
+    text = template.format(question=relabel(ex["question"]), choices="\n".join(
+        f"({key}) {relabel(value)}" for key, value in choices.items()))
+    content, metadata, audit_content = [], [], []
+    for i, img in images:
+        label = {"type": "text", "text": f"Image {i}:"}
+        buffer = io.BytesIO()
+        img.convert("RGB").save(buffer, format="PNG")
+        png = buffer.getvalue()
+        uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        content.extend([label, {"type": "image_url", "image_url": {"url": uri}}])
+        metadata.append(dict(number=i, width=img.width, height=img.height,
+                             png_sha256=hashlib.sha256(png).hexdigest()))
+        audit_content.extend([label, {"type": "image_url", "image_url": {"url": f"<image_{i}: PNG omitted>"}}])
+    content.append({"type": "text", "text": text})
+    audit_content.append({"type": "text", "text": text})
+    return ([{"role": "user", "content": content}], choices,
+            {"messages_without_image_bytes": [{"role": "user", "content": audit_content}],
+             "images": metadata})
+
+
+class GpuMonitor:
+    """Sample whole-device used VRAM, including vLLM workers and other processes."""
+    def __init__(self, gpu):
+        self.gpu = gpu
+        self.peak_mib = None
+        self.samples = 0
+        self.error = None
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self.poll, daemon=True)
+
+    def poll(self):
+        while not self.stop_event.is_set():
+            try:
+                output = subprocess.check_output([
+                    "nvidia-smi", "-i", self.gpu, "--query-gpu=memory.used",
+                    "--format=csv,noheader,nounits"], text=True, timeout=5)
+                value = float(output.strip())
+                self.peak_mib = max(self.peak_mib or 0, value)
+                self.samples += 1
+            except Exception as exc:
+                self.error = str(exc)
+            self.stop_event.wait(1.0)
+
+    def stop(self):
+        self.stop_event.set()
+        self.thread.join(timeout=6)
+        return {"peak_device_used_mib_sampled": self.peak_mib, "samples": self.samples,
+                "interval_seconds": 1.0, "physical_gpu": self.gpu, "error": self.error,
+                "scope": "whole device including other processes; sampled peak, not exact allocation peak"}
+
+
+def command_output(command):
+    try:
+        return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT, timeout=30)
+    except Exception as exc:
+        return f"Unavailable: {exc}"
+
+
+def arguments():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-path", "--model_path", default=MODEL,
+                        help="HF repo ID or local HF snapshot/checkpoint directory")
+    parser.add_argument("--model-revision", default=MODEL_REV,
+                        help="Set explicitly for a different remote fine-tuned checkpoint")
+    parser.add_argument("--data-root", "--data_root", default="MMMU/MMMU",
+                        help="MMMU/MMMU or local snapshot directory at the required revision")
+    parser.add_argument("--cache-dir", default=None, help="Optional datasets cache, not the snapshot path")
+    parser.add_argument("--output-dir", required=True, help="Must not exist; avoids mixing runs")
+    parser.add_argument("--limit-per-subject", type=int, default=0,
+                        help="0 = full 900; positive = development subset only")
+    parser.add_argument("--check-only", action="store_true", help="Check selected inputs without loading model")
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--max-model-len", type=int, default=8192)
+    parser.add_argument("--min-pixels", type=int, default=65536)
+    parser.add_argument("--max-pixels", type=int, default=589824)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument("--monitor-gpu", default="0", help="Physical index/UUID as used by nvidia-smi")
+    args = parser.parse_args()
+    if not 0 <= args.limit_per_subject <= 30:
+        parser.error("limit-per-subject must be between 0 and 30")
+    if not 0 < args.max_tokens < args.max_model_len:
+        parser.error("max-tokens must be positive and smaller than max-model-len")
+    if args.batch_size < 1 or not 0 < args.min_pixels <= args.max_pixels:
+        parser.error("invalid batch size or image pixel limits")
+    if not 0 < args.gpu_memory_utilization < 1:
+        parser.error("gpu-memory-utilization must be in (0,1)")
+    return args
+
+
+def make_report(outdir, manifest, summary):
+    args = manifest["arguments"]
+    rows = summary["subjects"]
+    peak = summary["gpu"]["peak_device_used_mib_sampled"]
+    peak_text = f"{peak / 1024:.3f} GiB (1 s sampled whole-device used VRAM)" if peak is not None else "NOT MEASURED"
+    complete = summary["complete_900"]
+    heading = "MMMU-val Baseline Evaluation Report — Qwen3-VL-4B-Instruct"
+    lines = [f"# {heading}", "", "> Draft: fill team details, rationale and evidence-based gap analysis."]
+    if not complete:
+        lines += ["> DEVELOPMENT SUBSET — not a valid 900-question submission."]
+    if not manifest["assignment_model"]:
+        lines += ["> CUSTOM CHECKPOINT — not the assignment's required base model."]
+    lines += ["", "- Team: TODO", "- Members: TODO", f"- Date: {manifest['started_utc']}",
+              "", "## 1. Environment / Reproducibility", "", "| Item | Value |", "|---|---|",
+              f"| Model | {manifest['resolved_model_path']} |",
+              f"| Model revision | {args['model_revision']} |",
+              f"| Data revision | {DATA_REV} |", "| Dtype | bfloat16; no quantization |",
+              f"| Backend | vLLM {manifest['packages'].get('vllm')} |",
+              f"| GPU | See environment.txt; physical device {args['monitor_gpu']} |",
+              f"| Peak VRAM | {peak_text} |",
+              f"| Wall time | {summary['total_seconds']:.2f} seconds, including setup/data/model load |",
+              f"| Model initialization | {summary['model_load_seconds']:.2f} seconds |",
+              "| Dependencies | requirements.freeze.txt, environment.txt |",
+              "", "Reproduce with a fresh output directory (all other settings unchanged):", "", "```bash",
+              manifest["command"], "```", "",
+              "Backend rationale: vLLM chat already passed the server smoke test; small batches limit memory use.",
+              "", "## 2. Prompt", "", "Source: team-designed template (not claimed to be Qwen's benchmark prompt).",
+              "Numbered images precede the text; `<image N>` references become `[Image N]`. No answer/explanation is included.",
+              "The pinned model's chat template is saved as chat_template.txt; per-question inputs are in inputs.jsonl.",
+              "", "Multiple choice:", "```text", MC_TEMPLATE, "```", "", "Open-ended:", "```text", OPEN_TEMPLATE, "```",
+              "Reason: allow a short explanation and specify a consistent final-answer format.",
+              "", "## 3. Generation Settings", "", "### 3.1 Sampling recipe", "",
+              "| Parameter | Value |", "|---|---|", "| do_sample | True (vLLM: temperature > 0) |"]
+    lines += [f"| {key} | {value} |" for key, value in RECIPE.items()]
+    lines += [f"\nSource: {RECIPE_URL}", "", "### 3.2 Generation budget / image resolution", "",
+              "| Parameter | Value |", "|---|---|"]
+    lines += [f"| {key} | {args[key]} |" for key in (
+        "max_tokens", "max_model_len", "min_pixels", "max_pixels", "batch_size", "gpu_memory_utilization")]
+    lines += ["", "Initial engineering limits, not claimed optimal. TODO: justify using measured VRAM, runtime and truncation results.",
+              "", "## 4. Scoring / Parsing", "",
+              f"MMMU source commit: {PARSER_REV}; see THIRD_PARTY.md.",
+              "MC: parenthesized letter, then standalone letter, then option text (responses longer than five words).",
+              "When multiple candidates occur, take the last occurrence under that rule. Unparsed responses are WRONG;",
+              "the official parser's random-choice fallback is deliberately removed. Open-ended parsing/scoring uses the vendored official code.",
+              "Empty responses are WRONG. No LLM judge. All attempted questions remain in the denominator.",
+              "", "## 5. Results", "", "| No. | Subject | Data Num | Acc (%) |", "|---|---|---|---|"]
+    lines += [f"| {i} | {r['subject']} | {r['n']} | {100*r['accuracy']:.2f} |" for i, r in enumerate(rows, 1)]
+    lines += [f"| | **Overall (macro avg)** | **{summary['n']}** | **{100*summary['macro_accuracy']:.2f}** |",
+              "", "Overall = mean of 30 subject accuracies, computed before rounding.",
+              "", "## 6. Official Comparison", ""]
+    if complete:
+        score = 100 * summary["macro_accuracy"]
+        lines += ["| | Overall (%) |", "|---|---|", "| Official course reference | 67.4 |",
+                  f"| Our result | {score:.2f} |", f"| Difference (percentage points) | {score-67.4:+.2f} |"]
+    else:
+        lines += ["Not compared to 67.4: this is a development subset."]
+    lines += ["", "## 7. Gap Analysis", "", "TODO: no more than 1,000 characters; observations, counts, controlled comparison and limitations.",
+              "", "## 8. Notes / Limitations", "",
+              f"- Unparsed/empty responses: {summary['unparsed']}/{summary['n']}.",
+              f"- Multiple MC candidates: {summary['ambiguous_mc']}/{summary['n']} (inspect raw outputs).",
+              f"- Length-limit terminations: {summary['length_limited']}/{summary['n']} (not all imply a missing final answer).",
+              "- VLLM_USE_FLASHINFER_SAMPLER=0: inherited server workaround for missing nvcc.",
+              "- VRAM includes all processes on the monitored GPU and may miss peaks between samples.",
+              "- Fixed seed is recorded, but changing hardware/backend/batching may change sampled outputs.",
+              "- Per-subject times exclude shared model initialization; see summary.json."]
+    (outdir / "report_draft.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run(args, outdir, manifest):
+    from datasets import load_dataset
+    from huggingface_hub import snapshot_download
+    from vendor.mmmu_eval_utils import parse_open_response, eval_open, eval_multi_choice
+
+    data_local = Path(args.data_root).expanduser().is_dir()
+    data_root = str(Path(args.data_root).expanduser().resolve()) if data_local else args.data_root
+    if data_local and Path(data_root).name != DATA_REV:
+        raise ValueError("For local data, provide the official HF snapshot directory named with the required data revision")
+    if not data_local and args.data_root != "MMMU/MMMU":
+        raise ValueError("Assignment dataset must be MMMU/MMMU")
+    load_start = time.perf_counter()
+    datasets, fingerprints, seen = {}, {}, set()
+    for subject in SUBJECTS:
+        kwargs = dict(split="validation", cache_dir=args.cache_dir)
+        if not data_local:
+            kwargs["revision"] = DATA_REV
+        dataset = load_dataset(data_root, subject, **kwargs)
+        if len(dataset) != 30:
+            raise ValueError(f"{subject}: expected 30, got {len(dataset)}")
+        ids = list(dataset["id"])
+        if len(set(ids)) != 30 or seen.intersection(ids):
+            raise ValueError(f"Duplicate IDs in {subject}")
+        seen.update(ids)
+        fingerprints[subject] = dataset._fingerprint
+        datasets[subject] = dataset.select(range(args.limit_per_subject)) if args.limit_per_subject else dataset
+    if len(seen) != 900:
+        raise ValueError("Expected 900 unique validation IDs")
+    manifest["dataset_fingerprints"] = fingerprints
+    manifest["dataset_load_seconds"] = time.perf_counter() - load_start
+    write_json(outdir / "manifest.json", manifest)
+    print(f"[data] Verified 900 unique IDs across 30 subjects. Selected {sum(map(len, datasets.values()))}.", flush=True)
+    if args.check_only:
+        counts = Counter()
+        with (outdir / "inputs.jsonl").open("w", encoding="utf-8") as audit:
+            for subject, dataset in datasets.items():
+                for ex in dataset:
+                    _, _, details = build_message(ex)
+                    counts[ex["question_type"]] += 1
+                    audit.write(json.dumps(dict(id=ex["id"], subject=subject, **details), ensure_ascii=False) + "\n")
+        manifest.update(status="inputs_checked_no_inference", selected_question_types=dict(counts))
+        write_json(outdir / "manifest.json", manifest)
+        print(f"[check-only] Inputs OK: {dict(counts)}. Model/GPU inference NOT tested.", flush=True)
+        return None
+
+    model_local = Path(args.model_path).expanduser().is_dir()
+    model_path = (str(Path(args.model_path).expanduser().resolve()) if model_local else
+                  snapshot_download(args.model_path, revision=args.model_revision))
+    manifest["resolved_model_path"] = model_path
+    manifest["assignment_model"] = (
+        (args.model_path == MODEL and args.model_revision == MODEL_REV)
+        or (model_local and Path(model_path).name == MODEL_REV)
+    )
+    config = json.loads((Path(model_path) / "config.json").read_text(encoding="utf-8"))
+    if config.get("quantization_config"):
+        raise ValueError("Quantized checkpoints are not supported in this assignment runner")
+    write_json(outdir / "manifest.json", manifest)
+    from vllm import LLM, SamplingParams
+    model_start = time.perf_counter()
+    print("[model] Loading BF16 model; initial compilation may take several minutes.", flush=True)
+    llm = LLM(
+        model=model_path, tokenizer=model_path, dtype="bfloat16", seed=RECIPE["seed"],
+        max_model_len=args.max_model_len, gpu_memory_utilization=args.gpu_memory_utilization,
+        limit_mm_per_prompt={"image": 7}, max_num_seqs=args.batch_size,
+        mm_processor_kwargs={"min_pixels": args.min_pixels, "max_pixels": args.max_pixels},
+        generation_config="vllm",
+    )
+    model_seconds = time.perf_counter() - model_start
+    tokenizer = llm.get_tokenizer()
+    (outdir / "chat_template.txt").write_text(tokenizer.get_chat_template(), encoding="utf-8")
+    params = SamplingParams(**RECIPE, max_tokens=args.max_tokens, n=1)
+    (outdir / "sampling_params.txt").write_text(str(params), encoding="utf-8")
+    all_rows, subject_rows = [], []
+    with (outdir / "predictions.jsonl").open("w", encoding="utf-8") as predictions, \
+         (outdir / "inputs.jsonl").open("w", encoding="utf-8") as audit:
+        for subject, dataset in datasets.items():
+            subject_start = time.perf_counter()
+            subject_records = []
+            print(f"[subject] {subject}: {len(dataset)} questions", flush=True)
+            for offset in range(0, len(dataset), args.batch_size):
+                examples = [dataset[i] for i in range(offset, min(offset + args.batch_size, len(dataset)))]
+                prepared = [build_message(ex) for ex in examples]
+                messages = [p[0] for p in prepared]
+                for ex, (_, _, details) in zip(examples, prepared):
+                    audit.write(json.dumps(dict(id=ex["id"], subject=subject, **details), ensure_ascii=False) + "\n")
+                audit.flush()
+                start = time.perf_counter()
+                outputs = llm.chat(messages, sampling_params=params, use_tqdm=False)
+                batch_seconds = time.perf_counter() - start
+                if len(outputs) != len(examples):
+                    raise RuntimeError("vLLM output count mismatch")
+                for ex, (_, choices, _), output in zip(examples, prepared, outputs):
+                    generated = output.outputs[0]
+                    raw = generated.text
+                    if ex["question_type"] == "multiple-choice":
+                        parsed, info = mc_parse(raw, choices)
+                        correct = parsed is not None and eval_multi_choice(ex["answer"], parsed)
+                    else:
+                        parsed = sorted(parse_open_response(raw), key=lambda x: (type(x).__name__, str(x))) if raw.strip() else []
+                        info = dict(mode="official_open" if parsed else "unparsed", candidates=[])
+                        correct = bool(parsed) and eval_open(ex["answer"], parsed)
+                    row = dict(id=ex["id"], subject=subject, question_type=ex["question_type"],
+                               answer=ex["answer"], raw_response=raw, parsed_answer=parsed,
+                               correct=bool(correct), parsing=info,
+                               output_tokens=len(generated.token_ids),
+                               input_tokens=len(output.prompt_token_ids) if output.prompt_token_ids is not None else None,
+                               finish_reason=generated.finish_reason, stop_reason=generated.stop_reason,
+                               batch_id=f"{subject}:{offset}", batch_size=len(examples), batch_seconds=batch_seconds)
+                    predictions.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+                    subject_records.append(row)
+                    all_rows.append(row)
+                predictions.flush()
+                print(f"  {offset + len(examples)}/{len(dataset)}  batch={batch_seconds:.1f}s", flush=True)
+            n = len(subject_records)
+            correct_n = sum(row["correct"] for row in subject_records)
+            subject_rows.append(dict(subject=subject, n=n, correct=correct_n, accuracy=correct_n/n,
+                                     seconds=time.perf_counter()-subject_start))
+            print(f"[result] {subject}: {correct_n}/{n} = {100*correct_n/n:.2f}%", flush=True)
+            write_json(outdir / "progress.json", dict(subjects=subject_rows, n_completed=len(all_rows)))
+    if len({row["id"] for row in all_rows}) != len(all_rows):
+        raise RuntimeError("Duplicate output IDs")
+    expected = 30 * (args.limit_per_subject or 30)
+    if len(all_rows) != expected:
+        raise RuntimeError(f"Expected {expected} outputs, got {len(all_rows)}")
+    macro = sum(row["accuracy"] for row in subject_rows) / 30
+    micro = sum(row["correct"] for row in all_rows) / len(all_rows)
+    if abs(macro - micro) > 1e-12:
+        raise RuntimeError("Macro/micro mismatch on balanced data")
+    return dict(n=len(all_rows), subjects=subject_rows, macro_accuracy=macro, micro_accuracy=micro,
+                complete_900=len(all_rows) == 900,
+                unparsed=sum(row["parsing"]["mode"] == "unparsed" for row in all_rows),
+                ambiguous_mc=sum(len(row["parsing"]["candidates"]) > 1 for row in all_rows),
+                length_limited=sum(row["finish_reason"] == "length" for row in all_rows),
+                model_load_seconds=model_seconds)
+
+
+def main():
+    args = arguments()
+    start = time.perf_counter()
+    outdir = Path(args.output_dir).expanduser().resolve()
+    outdir.mkdir(parents=True, exist_ok=False)
+    packages = {}
+    for name in ("torch", "transformers", "vllm", "datasets", "huggingface-hub", "Pillow", "numpy", "qwen-vl-utils"):
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = None
+    manifest = dict(started_utc=datetime.now(timezone.utc).isoformat(), status="running",
+                    arguments=vars(args), packages=packages, python=sys.version, platform=platform.platform(),
+                    command=shlex.join(["python", "-u", "eval_mmmu.py"] + sys.argv[1:]),
+                    script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                    recipe=RECIPE, recipe_source=RECIPE_URL, data_revision=DATA_REV,
+                    parser_revision=PARSER_REV, mc_prompt=MC_TEMPLATE, open_prompt=OPEN_TEMPLATE,
+                    environment={key: os.environ.get(key) for key in (
+                        "CUDA_VISIBLE_DEVICES", "VLLM_USE_FLASHINFER_SAMPLER", "VLLM_WORKER_MULTIPROC_METHOD")})
+    write_json(outdir / "manifest.json", manifest)
+    (outdir / "requirements.freeze.txt").write_text(command_output([sys.executable, "-m", "pip", "freeze"]), encoding="utf-8")
+    (outdir / "environment.txt").write_text(command_output(["nvidia-smi"]), encoding="utf-8")
+    monitor = GpuMonitor(args.monitor_gpu)
+    monitor.thread.start()
+    try:
+        summary = run(args, outdir, manifest)
+        gpu = monitor.stop()
+        total_seconds = time.perf_counter() - start
+        if summary is not None:
+            summary.update(gpu=gpu, total_seconds=total_seconds)
+            write_json(outdir / "summary.json", summary)
+            make_report(outdir, manifest, summary)
+            manifest["status"] = "complete" if summary["complete_900"] else "development_subset_complete"
+            print(f"[done] {summary['n']} questions, macro accuracy {100*summary['macro_accuracy']:.2f}%", flush=True)
+        manifest.update(total_seconds=total_seconds, gpu=gpu)
+        write_json(outdir / "manifest.json", manifest)
+        print(f"[output] {outdir}", flush=True)
+    except BaseException as exc:
+        manifest.update(status="failed", error=repr(exc), traceback=traceback.format_exc(),
+                        gpu=monitor.stop(), total_seconds=time.perf_counter()-start)
+        write_json(outdir / "manifest.json", manifest)
+        print("[failed] Partial records retained. No complete score/report claimed. See manifest.json.", file=sys.stderr, flush=True)
+        raise
+
+
+if __name__ == "__main__":
+    main()
