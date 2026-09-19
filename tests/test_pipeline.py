@@ -50,6 +50,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([im["number"] for im in audit["images"]], [1, 2])
         self.assertEqual(sum(c["type"] == "image_url" for c in messages[0]["content"]), 2)
 
+    def test_cot_prompt_has_strict_final_answer_marker(self):
+        messages, _, _ = runner.build_message(example(), prompt_style="cot")
+        text = messages[0]["content"][-1]["text"]
+        self.assertIn("Solve the problem step by step", text)
+        self.assertIn("Final answer: (X)", text)
+        self.assertNotIn("SECRET_GOLD", json.dumps(messages))
+
     def test_missing_image_in_option_raises(self):
         ex = example()
         ex["options"] = "['<image 3>', 'second']"
@@ -113,18 +120,24 @@ class PipelineTests(unittest.TestCase):
             args = SimpleNamespace(model_path=str(model), model_revision=runner.MODEL_REV,
                 data_root="MMMU/MMMU", cache_dir=None, limit_per_subject=0, check_only=False,
                 max_model_len=8192, gpu_memory_utilization=.85, batch_size=2,
-                min_pixels=65536, max_pixels=589824, max_tokens=256, monitor_gpu="0")
+                min_pixels=65536, max_pixels=589824, max_tokens=256, monitor_gpu="0",
+                prompt_style="direct")
             modules = {"datasets": dataset_module, "huggingface_hub": hf_module, "vllm": vllm_module}
             with patch.dict(sys.modules, modules), patch("builtins.print"):
                 manifest = {"arguments": vars(args), "packages": {"vllm": "mock"},
                             "started_utc": "test", "command": "test"}
                 summary = runner.run(args, Path(tmp), manifest)
                 self.assertEqual(summary["n"], 900)
+                self.assertEqual(summary["correct"], 900)
                 self.assertEqual(summary["macro_accuracy"], 1.0)
                 self.assertTrue(summary["complete_900"])
+                self.assertEqual(sum(row["n"] for row in summary["domains"]), 900)
+                self.assertEqual(summary["question_types"][0]["n"], 450)
                 summary.update(gpu={"peak_device_used_mib_sampled": None}, total_seconds=1)
                 runner.make_report(Path(tmp), manifest, summary)
-                self.assertIn("**900**", (Path(tmp) / "report_draft.md").read_text(encoding="utf-8"))
+                report = (Path(tmp) / "report_draft.md").read_text(encoding="utf-8")
+                self.assertIn("**900**", report)
+                self.assertIn("Core discipline", report)
                 self.assertEqual(len((Path(tmp) / "predictions.jsonl").read_text().splitlines()), 900)
                 truncate_mc[0] = True
                 truncated_summary = runner.run(args, Path(tmp), manifest)

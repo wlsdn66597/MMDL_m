@@ -9,6 +9,7 @@ venv/
 .cache/
 results/
 logs/
+# Selected final outputs copied by scripts/prepare_submission.py are committed under artifacts/.
 *.log
 models/
 checkpoints/
@@ -22,5 +23,7 @@ data/
 *.zip
 requirements.freeze.txt
 environment.txt
+!artifacts/**/requirements.freeze.txt
+!artifacts/**/environment.txt
 .DS_Store
 Thumbs.db

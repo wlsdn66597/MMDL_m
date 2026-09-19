@@ -35,6 +35,20 @@ Basic_Medical_Science Biology Chemistry Clinical_Medicine Computer_Science
 Design Diagnostics_and_Laboratory_Medicine Economics Electronics Energy_and_Power
 Finance Geography History Literature Manage Marketing Materials Math
 Mechanical_Engineering Music Pharmacy Physics Psychology Public_Health Sociology""".split()
+DOMAIN_CAT2SUB_CAT = {
+    "Art and Design": ["Art", "Art_Theory", "Design", "Music"],
+    "Business": ["Accounting", "Economics", "Finance", "Manage", "Marketing"],
+    "Science": ["Biology", "Chemistry", "Geography", "Math", "Physics"],
+    "Health and Medicine": [
+        "Basic_Medical_Science", "Clinical_Medicine",
+        "Diagnostics_and_Laboratory_Medicine", "Pharmacy", "Public_Health",
+    ],
+    "Humanities and Social Science": ["History", "Literature", "Sociology", "Psychology"],
+    "Tech and Engineering": [
+        "Agriculture", "Architecture_and_Engineering", "Computer_Science", "Electronics",
+        "Energy_and_Power", "Materials", "Mechanical_Engineering",
+    ],
+}
 RECIPE = dict(temperature=0.7, top_p=0.8, top_k=20,
               repetition_penalty=1.0, presence_penalty=1.5, seed=3407)
 RECIPE_URL = "https://github.com/QwenLM/Qwen3-VL#evaluation-reproduction"
@@ -46,6 +60,23 @@ OPEN_TEMPLATE = (
     "Question: {question}\n\n"
     "Answer concisely with only the final answer. Do not include an explanation."
 )
+COT_MC_TEMPLATE = (
+    "Question: {question}\n\nChoices:\n{choices}\n\n"
+    "Solve the problem step by step. End with `Final answer: (X)`, replacing X with "
+    "the single best option letter."
+)
+COT_OPEN_TEMPLATE = (
+    "Question: {question}\n\n"
+    "Solve the problem step by step. End with `Final answer: <answer>`."
+)
+
+
+def prompt_templates(style):
+    if style == "direct":
+        return MC_TEMPLATE, OPEN_TEMPLATE
+    if style == "cot":
+        return COT_MC_TEMPLATE, COT_OPEN_TEMPLATE
+    raise ValueError(f"Unknown prompt style: {style}")
 
 
 def write_json(path, value):
@@ -104,7 +135,7 @@ def mc_parse(raw, choices):
     return max(candidates, key=position), {"mode": mode, "candidates": candidates}
 
 
-def build_message(ex):
+def build_message(ex, prompt_style="direct"):
     """Numbered images first, followed by the question; labels preserve references."""
     images = [(i, ex.get(f"image_{i}")) for i in range(1, 8)
               if ex.get(f"image_{i}") is not None]
@@ -126,7 +157,8 @@ def build_message(ex):
         raise ValueError(f"Missing image reference: {ex['id']}: {refs - available}")
     def relabel(text):
         return re.sub(r"<image\s+(\d+)>", r"[Image \1]", text, flags=re.I)
-    template = MC_TEMPLATE if question_type == "multiple-choice" else OPEN_TEMPLATE
+    mc_template, open_template = prompt_templates(prompt_style)
+    template = mc_template if question_type == "multiple-choice" else open_template
     text = template.format(question=relabel(ex["question"]), choices="\n".join(
         f"({key}) {relabel(value)}" for key, value in choices.items()))
     content, metadata, audit_content = [], [], []
@@ -199,6 +231,8 @@ def arguments():
                         help="0 = full 900; positive = development subset only")
     parser.add_argument("--check-only", action="store_true", help="Check selected inputs without loading model")
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--prompt-style", choices=("direct", "cot"), default="direct",
+                        help="direct answer-only prompt or step-by-step prompt with an explicit final answer")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--min-pixels", type=int, default=65536)
@@ -220,6 +254,8 @@ def arguments():
 def make_report(outdir, manifest, summary):
     args = manifest["arguments"]
     rows = summary["subjects"]
+    domains = summary["domains"]
+    question_types = summary["question_types"]
     peak = summary["gpu"]["peak_device_used_mib_sampled"]
     peak_text = f"{peak / 1024:.3f} GiB (1 s sampled whole-device used VRAM)" if peak is not None else "NOT MEASURED"
     complete = summary["complete_900"]
@@ -229,9 +265,12 @@ def make_report(outdir, manifest, summary):
         lines += ["> DEVELOPMENT SUBSET — not a valid 900-question submission."]
     if not manifest["assignment_model"]:
         lines += ["> CUSTOM CHECKPOINT — not the assignment's required base model."]
+    prompt_style = args.get("prompt_style", "direct")
+    mc_template, open_template = prompt_templates(prompt_style)
     lines += ["", "- Team: TODO", "- Members: TODO", f"- Date: {manifest['started_utc']}",
               "", "## 1. Environment / Reproducibility", "", "| Item | Value |", "|---|---|",
-              f"| Model | {manifest['resolved_model_path']} |",
+              f"| Model | {args['model_path']} |",
+              f"| Resolved local checkpoint | {manifest['resolved_model_path']} |",
               f"| Model revision | {args['model_revision']} |",
               f"| Data revision | {DATA_REV} |", "| Dtype | bfloat16; no quantization |",
               f"| Backend | vLLM {manifest['packages'].get('vllm')} |",
@@ -243,11 +282,14 @@ def make_report(outdir, manifest, summary):
               "", "Reproduce with a fresh output directory (all other settings unchanged):", "", "```bash",
               manifest["command"], "```", "",
               "Backend rationale: vLLM chat already passed the server smoke test; small batches limit memory use.",
-              "", "## 2. Prompt", "", "Source: team-designed template (not claimed to be Qwen's benchmark prompt).",
+              "", "## 2. Prompt", "", f"Style: `{prompt_style}`.",
+              "Source: team-designed template (not claimed to be Qwen's benchmark prompt).",
               "Numbered images precede the text; `<image N>` references become `[Image N]`. No answer/explanation is included.",
               "The pinned model's chat template is saved as chat_template.txt; per-question inputs are in inputs.jsonl.",
-              "", "Multiple choice:", "```text", MC_TEMPLATE, "```", "", "Open-ended:", "```text", OPEN_TEMPLATE, "```",
-              "Reason: constrain the response to the directly scored answer and avoid unfinished repetitive reasoning.",
+              "", "Multiple choice:", "```text", mc_template, "```", "", "Open-ended:", "```text", open_template, "```",
+              ("Reason: constrain the response to the directly scored answer and avoid unfinished repetitive reasoning."
+               if prompt_style == "direct" else
+               "Reason: test whether explicit reasoning improves accuracy while retaining a strict final-answer delimiter."),
               "", "## 3. Generation Settings", "", "### 3.1 Sampling recipe", "",
               "| Parameter | Value |", "|---|---|", "| do_sample | True (vLLM: temperature > 0) |"]
     lines += [f"| {key} | {value} |" for key, value in RECIPE.items()]
@@ -262,9 +304,19 @@ def make_report(outdir, manifest, summary):
               "When multiple candidates occur, take the last occurrence under that rule. Unparsed responses are WRONG;",
               "the official parser's random-choice fallback is deliberately removed. Open-ended parsing/scoring uses the vendored official code.",
               "Empty responses are WRONG. No LLM judge. All attempted questions remain in the denominator.",
-              "", "## 5. Results", "", "| No. | Subject | Data Num | Acc (%) |", "|---|---|---|---|"]
-    lines += [f"| {i} | {r['subject']} | {r['n']} | {100*r['accuracy']:.2f} |" for i, r in enumerate(rows, 1)]
-    lines += [f"| | **Overall (macro avg)** | **{summary['n']}** | **{100*summary['macro_accuracy']:.2f}** |",
+              "", "## 5. Results", "", "### 5.1 Question type", "",
+              "| Type | Data Num | Correct | Acc (%) |", "|---|---:|---:|---:|"]
+    lines += [f"| {r['question_type']} | {r['n']} | {r['correct']} | {100*r['accuracy']:.2f} |"
+              for r in question_types]
+    lines += ["", "### 5.2 Core discipline", "",
+              "| Discipline | Data Num | Correct | Acc (%) | Time (s) |", "|---|---:|---:|---:|---:|"]
+    lines += [f"| {r['domain']} | {r['n']} | {r['correct']} | {100*r['accuracy']:.2f} | {r['seconds']:.2f} |"
+              for r in domains]
+    lines += ["", "### 5.3 Subject", "", "| No. | Subject | Data Num | Acc (%) | Time (s) |",
+              "|---|---|---:|---:|---:|"]
+    lines += [f"| {i} | {r['subject']} | {r['n']} | {100*r['accuracy']:.2f} | {r['seconds']:.2f} |"
+              for i, r in enumerate(rows, 1)]
+    lines += [f"| | **Overall (macro avg)** | **{summary['n']}** | **{100*summary['macro_accuracy']:.2f}** | |",
               "", "Overall = mean of 30 subject accuracies, computed before rounding.",
               "", "## 6. Official Comparison", ""]
     if complete:
@@ -322,7 +374,7 @@ def run(args, outdir, manifest):
         with (outdir / "inputs.jsonl").open("w", encoding="utf-8") as audit:
             for subject, dataset in datasets.items():
                 for ex in dataset:
-                    _, _, details = build_message(ex)
+                    _, _, details = build_message(ex, getattr(args, "prompt_style", "direct"))
                     counts[ex["question_type"]] += 1
                     audit.write(json.dumps(dict(id=ex["id"], subject=subject, **details), ensure_ascii=False) + "\n")
         manifest.update(status="inputs_checked_no_inference", selected_question_types=dict(counts))
@@ -366,7 +418,7 @@ def run(args, outdir, manifest):
             print(f"[subject] {subject}: {len(dataset)} questions", flush=True)
             for offset in range(0, len(dataset), args.batch_size):
                 examples = [dataset[i] for i in range(offset, min(offset + args.batch_size, len(dataset)))]
-                prepared = [build_message(ex) for ex in examples]
+                prepared = [build_message(ex, getattr(args, "prompt_style", "direct")) for ex in examples]
                 messages = [p[0] for p in prepared]
                 for ex, (_, _, details) in zip(examples, prepared):
                     audit.write(json.dumps(dict(id=ex["id"], subject=subject, **details), ensure_ascii=False) + "\n")
@@ -418,7 +470,24 @@ def run(args, outdir, manifest):
     micro = sum(row["correct"] for row in all_rows) / len(all_rows)
     if abs(macro - micro) > 1e-12:
         raise RuntimeError("Macro/micro mismatch on balanced data")
-    return dict(n=len(all_rows), subjects=subject_rows, macro_accuracy=macro, micro_accuracy=micro,
+    subject_by_name = {row["subject"]: row for row in subject_rows}
+    domains = []
+    for domain, domain_subjects in DOMAIN_CAT2SUB_CAT.items():
+        selected = [subject_by_name[name] for name in domain_subjects]
+        domain_n = sum(row["n"] for row in selected)
+        domain_correct = sum(row["correct"] for row in selected)
+        domains.append(dict(domain=domain, n=domain_n, correct=domain_correct,
+                            accuracy=domain_correct / domain_n,
+                            seconds=sum(row["seconds"] for row in selected)))
+    question_types = []
+    for question_type in ("multiple-choice", "open"):
+        selected = [row for row in all_rows if row["question_type"] == question_type]
+        correct_n = sum(row["correct"] for row in selected)
+        question_types.append(dict(question_type=question_type, n=len(selected), correct=correct_n,
+                                   accuracy=correct_n / len(selected) if selected else 0.0))
+    return dict(n=len(all_rows), correct=sum(row["correct"] for row in all_rows),
+                subjects=subject_rows, domains=domains,
+                question_types=question_types, macro_accuracy=macro, micro_accuracy=micro,
                 complete_900=len(all_rows) == 900,
                 unparsed=sum("unparsed" in row["parsing"]["mode"] for row in all_rows),
                 ambiguous_mc=sum(len(row["parsing"]["candidates"]) > 1 for row in all_rows),
@@ -437,12 +506,13 @@ def main():
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             packages[name] = None
+    mc_prompt, open_prompt = prompt_templates(args.prompt_style)
     manifest = dict(started_utc=datetime.now(timezone.utc).isoformat(), status="running",
                     arguments=vars(args), packages=packages, python=sys.version, platform=platform.platform(),
                     command=shlex.join(["python", "-u", "eval_mmmu.py"] + sys.argv[1:]),
                     script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     recipe=RECIPE, recipe_source=RECIPE_URL, data_revision=DATA_REV,
-                    parser_revision=PARSER_REV, mc_prompt=MC_TEMPLATE, open_prompt=OPEN_TEMPLATE,
+                    parser_revision=PARSER_REV, mc_prompt=mc_prompt, open_prompt=open_prompt,
                     environment={key: os.environ.get(key) for key in (
                         "CUDA_VISIBLE_DEVICES", "VLLM_USE_FLASHINFER_SAMPLER", "VLLM_WORKER_MULTIPROC_METHOD")})
     write_json(outdir / "manifest.json", manifest)
