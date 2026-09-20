@@ -166,6 +166,37 @@ python scripts/validate_run_profile.py results/ab900_pixels_course \
 signature가 같은지 먼저 검사합니다. 해상도나 프롬프트처럼 설정 차이 자체가 실험 변수인
 ablation만 `--allow-config-differences`를 명시합니다.
 
+### 연구 지표 생성
+
+학습 데이터를 정하기 전, 고정 베이스라인에서 정확도·출력 품질·시각 입력 구조별 성능을
+한 번에 계산합니다.
+
+```bash
+python scripts/analyze_research_metrics.py results/baseline900_v1 \
+  --output-prefix reports/baseline900_v1_metrics
+```
+
+다음 지표가 JSON과 Markdown으로 저장됩니다.
+
+- 전체 정확도와 Wilson 95% 신뢰구간, 과목 macro accuracy
+- 단일/다중 이미지, 명시적 단일/다중 이미지 참조별 정확도와 격차
+- 미파싱, 다중 후보, 길이 제한, 기대 답변 형식 준수율
+- 입력·출력 토큰 수, 중복 집계를 제거한 실제 batch 추론 시간과 처리량
+
+base와 fine-tuned 모델처럼 같은 평가 설정의 두 실행을 비교하려면 다음과 같이 실행합니다.
+
+```bash
+python scripts/analyze_research_metrics.py results/baseline900_v1 \
+  --paired-run results/finetuned900_v1 \
+  --output-prefix reports/base_vs_finetuned_metrics
+```
+
+paired 결과에는 정확도 변화, 답변 변화율, correct→wrong/wrong→correct와 exact McNemar
+검정이 포함됩니다. 프롬프트·해상도처럼 설정 차이 자체를 비교하는 ablation에만
+`--allow-config-differences`를 추가합니다. 이미지 수와 참조 수에 따른 차이는 관찰 지표이며,
+모델이 실제로 시각적 근거를 사용했다는 인과 증거는 아닙니다. 그 판단은 이후 이미지
+제거·교체·순서 변경 같은 통제된 paired 실험으로 측정합니다.
+
 SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하고, 그 안에서
 위의 가상환경 활성화/폴더 이동/평가 명령을 실행하세요. Ctrl-B 다음 D로 분리합니다.
 다시 접속할 때는 `tmux attach -t mmmu_eval`입니다.

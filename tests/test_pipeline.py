@@ -12,6 +12,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import eval_mmmu as runner
 from scripts.compare_runs import config_differences
+from scripts.analyze_research_metrics import (
+    input_features, paired_metric, render_markdown, summarize_run, wilson_interval,
+)
 from vendor.mmmu_eval_utils import eval_open, parse_open_response
 
 
@@ -33,6 +36,71 @@ def example(identifier="test", question_type="multiple-choice"):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_research_metrics_image_references_and_paired_transitions(self):
+        input_row = {
+            "images": [{"number": 1}, {"number": 2}],
+            "messages_without_image_bytes": [{"content": [
+                {"type": "text", "text": "Image 1:"},
+                {"type": "image_url"},
+                {"type": "text", "text": "Image 2:"},
+                {"type": "image_url"},
+                {"type": "text", "text": "Compare [Image 2] with [Image 1]."},
+            ]}],
+        }
+        features = input_features(input_row)
+        self.assertEqual(features["image_count_bucket"], "2")
+        self.assertEqual(features["reference_pattern"], "multi-explicit-reference")
+        self.assertEqual(features["reference_order"], "out-of-order")
+        rows_a = [
+            {"id": "1", "correct": True, "parsed_answer": "A"},
+            {"id": "2", "correct": False, "parsed_answer": "B"},
+        ]
+        rows_b = [
+            {"id": "1", "correct": False, "parsed_answer": "B"},
+            {"id": "2", "correct": True, "parsed_answer": "A"},
+        ]
+        paired = paired_metric(rows_a, rows_b)
+        self.assertEqual(paired["correct_to_wrong"], 1)
+        self.assertEqual(paired["wrong_to_correct"], 1)
+        self.assertEqual(paired["answer_change_rate"], 1.0)
+        self.assertEqual(paired["mcnemar_exact_p"], 1.0)
+        low, high = wilson_interval(5, 10)
+        self.assertLess(low, .5)
+        self.assertGreater(high, .5)
+
+    def test_research_metrics_end_to_end_and_unique_batch_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            predictions = [
+                {"id": "1", "subject": "Math", "question_type": "multiple-choice", "answer": "A",
+                 "parsed_answer": "A", "correct": True, "parsing": {"mode": "exact_letter", "candidates": ["A"]},
+                 "finish_reason": "stop", "output_tokens": 1, "input_tokens": 100,
+                 "batch_id": "b1", "batch_seconds": 2.0},
+                {"id": "2", "subject": "Math", "question_type": "multiple-choice", "answer": "B",
+                 "parsed_answer": "A", "correct": False, "parsing": {"mode": "exact_letter", "candidates": ["A"]},
+                 "finish_reason": "stop", "output_tokens": 1, "input_tokens": 120,
+                 "batch_id": "b1", "batch_seconds": 2.0},
+            ]
+            inputs = [
+                {"id": "1", "images": [{"number": 1}], "messages_without_image_bytes": [
+                    {"content": [{"type": "text", "text": "Use [Image 1]."}]}]},
+                {"id": "2", "images": [{"number": 1}, {"number": 2}], "messages_without_image_bytes": [
+                    {"content": [{"type": "text", "text": "Compare [Image 1] and [Image 2]."}]}]},
+            ]
+            (run_dir / "predictions.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in predictions), encoding="utf-8")
+            (run_dir / "inputs.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in inputs), encoding="utf-8")
+            runner.write_json(run_dir / "manifest.json", {"arguments": {"prompt_style": "direct"}})
+            runner.write_json(run_dir / "summary.json", {
+                "total_seconds": 5.0, "gpu": {"peak_device_used_mib_sampled": 1000.0}})
+            report = summarize_run(run_dir)
+            self.assertEqual(report["overall"]["accuracy"], .5)
+            self.assertEqual(report["efficiency"]["inference_seconds_unique_batches"], 2.0)
+            self.assertEqual(report["efficiency"]["questions_per_inference_second"], 1.0)
+            self.assertEqual(report["visual_structure"]["multi_minus_single_accuracy_pp"], -100.0)
+            self.assertIn("Multi-image minus single-image accuracy", render_markdown(report))
+
     def test_fixed_profile_accepts_canonical_settings_and_rejects_override(self):
         profile_path = Path(__file__).resolve().parents[1] / "configs" / "mmmu_val_v1.json"
         profile, _, digest = runner.load_evaluation_profile(profile_path)
