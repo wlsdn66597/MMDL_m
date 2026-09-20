@@ -30,6 +30,8 @@ MODEL = "Qwen/Qwen3-VL-4B-Instruct"
 MODEL_REV = "ebb281ec70b05090aa6165b016eac8ec08e71b17"
 DATA_REV = "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68"
 PARSER_REV = "aa9b70da92c2825b3d544d1a11b36856bd92f6c3"
+EVALUATION_PIPELINE_VERSION = "mmmu-val-v1"
+IMAGE_LAYOUT_VERSION = "numbered-images-prefix-v1"
 SUBJECTS = """Accounting Agriculture Architecture_and_Engineering Art Art_Theory
 Basic_Medical_Science Biology Chemistry Clinical_Medicine Computer_Science
 Design Diagnostics_and_Laboratory_Medicine Economics Electronics Energy_and_Power
@@ -93,6 +95,71 @@ def prompt_templates(style):
 
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def canonical_sha256(value):
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def load_evaluation_profile(path):
+    path = Path(path).expanduser().resolve()
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    required = {
+        "profile_name", "pipeline_version", "dataset_revision", "parser_revision",
+        "image_layout_version", "sampling_recipe", "locked_arguments",
+    }
+    missing = sorted(required - set(profile))
+    if missing:
+        raise ValueError(f"Evaluation profile is missing keys: {missing}")
+    return profile, path, canonical_sha256(profile)
+
+
+def validate_evaluation_profile(profile, args):
+    """Reject a run when a locked evaluation setting differs from the named profile."""
+    invariants = {
+        "pipeline_version": EVALUATION_PIPELINE_VERSION,
+        "dataset_revision": DATA_REV,
+        "parser_revision": PARSER_REV,
+        "image_layout_version": IMAGE_LAYOUT_VERSION,
+        "sampling_recipe": RECIPE,
+    }
+    mismatches = []
+    for key, actual in invariants.items():
+        if profile.get(key) != actual:
+            mismatches.append(f"profile.{key}: expected current code {actual!r}, got {profile.get(key)!r}")
+    for key, expected in profile["locked_arguments"].items():
+        actual = getattr(args, key, None)
+        if actual != expected:
+            mismatches.append(f"--{key.replace('_', '-')}: expected {expected!r}, got {actual!r}")
+    if mismatches:
+        raise ValueError("Evaluation profile mismatch:\n  " + "\n  ".join(mismatches))
+
+
+def evaluation_signature(args, profile_sha256=None):
+    """Settings that must match for a controlled model/checkpoint comparison."""
+    mc_prompt, open_prompt = prompt_templates(args.prompt_style)
+    config = {
+        "pipeline_version": EVALUATION_PIPELINE_VERSION,
+        "dataset_revision": DATA_REV,
+        "parser_revision": PARSER_REV,
+        "image_layout_version": IMAGE_LAYOUT_VERSION,
+        "sampling_recipe": RECIPE,
+        "prompt_style": args.prompt_style,
+        "mc_prompt": mc_prompt,
+        "open_prompt": open_prompt,
+        "max_tokens": args.max_tokens,
+        "max_model_len": args.max_model_len,
+        "min_pixels": args.min_pixels,
+        "max_pixels": args.max_pixels,
+        "batch_size": args.batch_size,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
+        "dtype": "bfloat16",
+        "quantization": None,
+        "max_images_per_prompt": 7,
+        "profile_sha256": profile_sha256,
+    }
+    return {"sha256": canonical_sha256(config), "config": config}
 
 
 def image_as_rgb(img):
@@ -251,6 +318,8 @@ def arguments():
     parser.add_argument("--max-pixels", type=int, default=589824)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument("--monitor-gpu", default="0", help="Physical index/UUID as used by nvidia-smi")
+    parser.add_argument("--evaluation-profile", default=None,
+                        help="JSON profile whose locked evaluation settings must match this run")
     args = parser.parse_args()
     if not 0 <= args.limit_per_subject <= 30:
         parser.error("limit-per-subject must be between 0 and 30")
@@ -260,7 +329,15 @@ def arguments():
         parser.error("invalid batch size or image pixel limits")
     if not 0 < args.gpu_memory_utilization < 1:
         parser.error("gpu-memory-utilization must be in (0,1)")
-    return args
+    profile_info = None
+    if args.evaluation_profile:
+        try:
+            profile_info = load_evaluation_profile(args.evaluation_profile)
+            validate_evaluation_profile(profile_info[0], args)
+            args.evaluation_profile = str(profile_info[1])
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(str(exc))
+    return args, profile_info
 
 
 def make_report(outdir, manifest, summary):
@@ -312,8 +389,10 @@ def make_report(outdir, manifest, summary):
     lines += ["", "Initial engineering limits, not claimed optimal. TODO: justify using measured VRAM, runtime and truncation results.",
               "", "## 4. Scoring / Parsing", "",
               f"MMMU source commit: {PARSER_REV}; see THIRD_PARTY.md.",
-              "MC: parenthesized letter, then standalone letter, then option text (responses longer than five words).",
-              "When multiple candidates occur, take the last occurrence under that rule. Unparsed responses are WRONG;",
+              "MC precedence: the last explicit `Final answer`, exact letter-only response, parenthesized letter,",
+              "standalone letter, then option text (responses longer than five words). Multiple candidates use the last occurrence.",
+              "A length-truncated MC response is accepted only when it contains an explicit final answer or is exactly one letter.",
+              "All other unparsed responses are WRONG;",
               "the official parser's random-choice fallback is deliberately removed. Open-ended parsing/scoring uses the vendored official code.",
               "Empty responses are WRONG. No LLM judge. All attempted questions remain in the denominator.",
               "", "## 5. Results", "", "### 5.1 Question type", "",
@@ -508,7 +587,7 @@ def run(args, outdir, manifest):
 
 
 def main():
-    args = arguments()
+    args, profile_info = arguments()
     start = time.perf_counter()
     outdir = Path(args.output_dir).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=False)
@@ -519,15 +598,24 @@ def main():
         except importlib.metadata.PackageNotFoundError:
             packages[name] = None
     mc_prompt, open_prompt = prompt_templates(args.prompt_style)
+    profile, profile_path, profile_hash = profile_info if profile_info else (None, None, None)
+    signature = evaluation_signature(args, profile_hash)
     manifest = dict(started_utc=datetime.now(timezone.utc).isoformat(), status="running",
                     arguments=vars(args), packages=packages, python=sys.version, platform=platform.platform(),
                     command=shlex.join(["python", "-u", "eval_mmmu.py"] + sys.argv[1:]),
                     script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     recipe=RECIPE, recipe_source=RECIPE_URL, data_revision=DATA_REV,
                     parser_revision=PARSER_REV, mc_prompt=mc_prompt, open_prompt=open_prompt,
+                    evaluation_pipeline_version=EVALUATION_PIPELINE_VERSION,
+                    image_layout_version=IMAGE_LAYOUT_VERSION,
+                    evaluation_profile=(dict(name=profile["profile_name"], path=str(profile_path),
+                                             sha256=profile_hash) if profile else None),
+                    evaluation_signature=signature,
                     environment={key: os.environ.get(key) for key in (
                         "CUDA_VISIBLE_DEVICES", "VLLM_USE_FLASHINFER_SAMPLER", "VLLM_WORKER_MULTIPROC_METHOD")})
     write_json(outdir / "manifest.json", manifest)
+    if profile:
+        write_json(outdir / "evaluation_profile.json", profile)
     (outdir / "requirements.freeze.txt").write_text(command_output([sys.executable, "-m", "pip", "freeze"]), encoding="utf-8")
     (outdir / "environment.txt").write_text(command_output(["nvidia-smi"]), encoding="utf-8")
     monitor = GpuMonitor(args.monitor_gpu)

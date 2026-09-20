@@ -1,0 +1,26 @@
+{
+  "profile_name": "mmmu_val_v1",
+  "description": "Fixed MMMU validation pipeline selected after the full 900-question resolution experiment.",
+  "pipeline_version": "mmmu-val-v1",
+  "dataset_revision": "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68",
+  "parser_revision": "aa9b70da92c2825b3d544d1a11b36856bd92f6c3",
+  "image_layout_version": "numbered-images-prefix-v1",
+  "sampling_recipe": {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "repetition_penalty": 1.0,
+    "presence_penalty": 1.5,
+    "seed": 3407
+  },
+  "locked_arguments": {
+    "limit_per_subject": 0,
+    "batch_size": 1,
+    "prompt_style": "direct",
+    "max_tokens": 256,
+    "max_model_len": 8192,
+    "min_pixels": 1003520,
+    "max_pixels": 4014080,
+    "gpu_memory_utilization": 0.85
+  }
+}

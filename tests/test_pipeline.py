@@ -11,6 +11,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import eval_mmmu as runner
+from scripts.compare_runs import config_differences
 from vendor.mmmu_eval_utils import eval_open, parse_open_response
 
 
@@ -32,6 +33,27 @@ def example(identifier="test", question_type="multiple-choice"):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_fixed_profile_accepts_canonical_settings_and_rejects_override(self):
+        profile_path = Path(__file__).resolve().parents[1] / "configs" / "mmmu_val_v1.json"
+        profile, _, digest = runner.load_evaluation_profile(profile_path)
+        args = SimpleNamespace(**profile["locked_arguments"])
+        runner.validate_evaluation_profile(profile, args)
+        signature = runner.evaluation_signature(args, digest)
+        self.assertEqual(signature["config"]["profile_sha256"], digest)
+        args.max_pixels -= 1
+        with self.assertRaisesRegex(ValueError, "max-pixels"):
+            runner.validate_evaluation_profile(profile, args)
+
+    def test_comparison_config_ignores_checkpoint_but_detects_pipeline_change(self):
+        profile_path = Path(__file__).resolve().parents[1] / "configs" / "mmmu_val_v1.json"
+        profile, _, digest = runner.load_evaluation_profile(profile_path)
+        args = SimpleNamespace(**profile["locked_arguments"])
+        base = runner.evaluation_signature(args, digest)["config"]
+        fine_tuned = dict(base)
+        self.assertEqual(config_differences(base, fine_tuned), [])
+        fine_tuned["max_tokens"] = 512
+        self.assertEqual(config_differences(base, fine_tuned), [("max_tokens", 256, 512)])
+
     def test_palette_transparency_is_composited_on_white(self):
         img = Image.new("P", (1, 1))
         img.putpalette([255, 0, 0] + [0, 0, 0] * 255)

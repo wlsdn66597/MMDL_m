@@ -4,11 +4,17 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from eval_mmmu import evaluation_signature, load_evaluation_profile, validate_evaluation_profile
+from types import SimpleNamespace
 
 
 ARTIFACTS = (
     "summary.json", "manifest.json", "predictions.jsonl", "inputs.jsonl",
     "sampling_params.txt", "chat_template.txt", "environment.txt", "requirements.freeze.txt",
+    "evaluation_profile.json",
 )
 
 
@@ -21,11 +27,23 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     summary_path = result_dir / "summary.json"
     report_path = result_dir / "report_draft.md"
-    if not summary_path.is_file() or not report_path.is_file():
-        raise SystemExit("The result directory must contain summary.json and report_draft.md")
+    manifest_path = result_dir / "manifest.json"
+    if not summary_path.is_file() or not report_path.is_file() or not manifest_path.is_file():
+        raise SystemExit("The result directory must contain summary.json, manifest.json and report_draft.md")
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     if summary.get("n") != 900 or not summary.get("complete_900"):
         raise SystemExit("Refusing to prepare a submission from an incomplete run")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    profile, _, profile_hash = load_evaluation_profile(repo / "configs" / "mmmu_val_v1.json")
+    try:
+        validate_evaluation_profile(profile, SimpleNamespace(**manifest.get("arguments", {})))
+    except ValueError as exc:
+        raise SystemExit(f"Refusing a run outside the fixed evaluation profile: {exc}") from exc
+    recorded = manifest.get("evaluation_profile") or {}
+    signature = manifest.get("evaluation_signature") or {}
+    expected_signature = evaluation_signature(SimpleNamespace(**manifest["arguments"]), profile_hash)
+    if recorded.get("sha256") != profile_hash or signature != expected_signature:
+        raise SystemExit("Refusing an unsigned/legacy run: rerun with scripts/run_mmmu_val_v1.sh")
     reports = repo / "reports"
     destination = repo / "artifacts" / args.name
     reports.mkdir(exist_ok=True)

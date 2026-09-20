@@ -3,6 +3,7 @@
 import argparse
 from collections import defaultdict
 from math import comb
+import hashlib
 import json
 from pathlib import Path
 
@@ -18,6 +19,45 @@ def load_rows(path):
     if len(by_id) != len(rows):
         raise ValueError(f"Duplicate IDs in {path}")
     return by_id
+
+
+def load_evaluation_config(path):
+    """Return the recorded evaluation config and whether it has a signed v1 record."""
+    if not path.is_dir():
+        return None, False
+    manifest_path = path / "manifest.json"
+    if not manifest_path.is_file():
+        return None, False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    signature = manifest.get("evaluation_signature")
+    if isinstance(signature, dict) and isinstance(signature.get("config"), dict):
+        encoded = json.dumps(signature["config"], ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8")
+        if signature.get("sha256") != hashlib.sha256(encoded).hexdigest():
+            raise ValueError(f"Invalid evaluation signature in {manifest_path}")
+        return signature["config"], True
+    arguments = manifest.get("arguments", {})
+    # Legacy manifests can still be checked field by field, but lack an explicit pipeline version.
+    config = {
+        "pipeline_version": manifest.get("evaluation_pipeline_version"),
+        "dataset_revision": manifest.get("data_revision"),
+        "parser_revision": manifest.get("parser_revision"),
+        "image_layout_version": manifest.get("image_layout_version"),
+        "sampling_recipe": manifest.get("recipe"),
+        "prompt_style": arguments.get("prompt_style", "direct"),
+        "mc_prompt": manifest.get("mc_prompt"),
+        "open_prompt": manifest.get("open_prompt"),
+    }
+    for key in ("max_tokens", "max_model_len", "min_pixels", "max_pixels", "batch_size",
+                "gpu_memory_utilization"):
+        config[key] = arguments.get(key)
+    return config, False
+
+
+def config_differences(config_a, config_b):
+    keys = sorted(set(config_a) | set(config_b))
+    return [(key, config_a.get(key), config_b.get(key))
+            for key in keys if config_a.get(key) != config_b.get(key)]
 
 
 def exact_mcnemar_p(a_only, b_only):
@@ -49,7 +89,31 @@ def main():
     parser.add_argument("--label-a", default="A")
     parser.add_argument("--label-b", default="B")
     parser.add_argument("--output", type=Path, help="Optional Markdown output path")
+    parser.add_argument("--allow-config-differences", action="store_true",
+                        help="Allow and report intentional evaluation-setting differences for an ablation")
+    parser.add_argument("--allow-unverified-config", action="store_true",
+                        help="Allow prediction files/runs with no readable manifest (comparison cannot be controlled)")
     args = parser.parse_args()
+    config_a, signed_a = load_evaluation_config(args.run_a)
+    config_b, signed_b = load_evaluation_config(args.run_b)
+    if config_a is None or config_b is None:
+        if not args.allow_unverified_config:
+            raise SystemExit("Both inputs must be result directories containing manifest.json. "
+                             "Use --allow-unverified-config only for legacy prediction files.")
+        differences = []
+        config_status = "UNVERIFIED: at least one input has no readable manifest."
+    else:
+        differences = config_differences(config_a, config_b)
+        if differences and not args.allow_config_differences:
+            preview = "; ".join(f"{key}: {a!r} != {b!r}" for key, a, b in differences[:5])
+            raise SystemExit("Evaluation configs differ. For an intentional ablation, rerun with "
+                             f"--allow-config-differences. Differences: {preview}")
+        if differences:
+            config_status = "INTENTIONAL ABLATION: evaluation-setting differences were explicitly allowed."
+        elif signed_a and signed_b:
+            config_status = "PASS: recorded evaluation signatures match."
+        else:
+            config_status = "PASS WITH LEGACY MANIFESTS: recorded fields match, but v1 signatures are absent."
     rows_a, rows_b = load_rows(args.run_a), load_rows(args.run_b)
     if set(rows_a) != set(rows_b):
         only_a = sorted(set(rows_a) - set(rows_b))[:5]
@@ -67,6 +131,11 @@ def main():
     groups.update(by_type)
     results = {name: metric(rows_a, rows_b, group_ids) for name, group_ids in groups.items()}
     lines = [f"# Paired comparison: {args.label_a} vs {args.label_b}", "",
+             "## Evaluation configuration", "", config_status]
+    if differences:
+        lines += ["", "| Setting | A | B |", "|---|---|---|"]
+        lines += [f"| `{key}` | `{a}` | `{b}` |" for key, a, b in differences]
+    lines += ["", "## Paired accuracy", "",
              "| Group | N | A acc | B acc | B-A | A only | B only | Exact McNemar p |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"]
     for name, row in results.items():

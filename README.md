@@ -82,6 +82,7 @@ bash scripts/run_mmmu_eval.sh \
 python scripts/compare_runs.py \
   results/ab60_pixels_low results/ab60_pixels_course \
   --label-a pixels_low --label-b pixels_course \
+  --allow-config-differences \
   --output reports/ab_pixels.md
 ```
 
@@ -108,6 +109,7 @@ bash scripts/run_mmmu_eval.sh \
 python scripts/compare_runs.py \
   results/ab60_prompt_direct results/ab60_prompt_cot_brief \
   --label-a direct --label-b cot_brief \
+  --allow-config-differences \
   --output reports/ab_prompt.md
 ```
 
@@ -139,16 +141,30 @@ python -u eval_mmmu.py --check-only \
   --output-dir results/input_check900
 ```
 
-### 900문항 전체 평가
+### 900문항 전체 평가: 고정 프로필
 
-소규모 실행 결과로 설정을 확정한 다음 실행합니다. 변경한 옵션은 전체 실행에도 똑같이 넣습니다.
+전체 해상도 실험에서 선택한 52.89% 조건을 `configs/mmmu_val_v1.json`에 고정했습니다.
+direct prompt, 강의자료 해상도 범위, batch 1, 출력 256 tokens 및 Qwen sampling recipe를
+검사한 뒤 실행합니다. 프로필과 충돌하는 옵션을 추가하면 추론 전에 중단됩니다.
 
 ```bash
-bash scripts/run_mmmu_eval.sh \
+bash scripts/run_mmmu_val_v1.sh \
   --model-path Qwen/Qwen3-VL-4B-Instruct \
   --data-root MMMU/MMMU \
-  --output-dir results/baseline900
+  --output-dir results/baseline900_v1
 ```
+
+서버에 남아 있는 기존 52.89% 실행이 같은 조건인지 `manifest.json`으로 확인합니다.
+
+```bash
+python scripts/validate_run_profile.py results/ab900_pixels_course \
+  --profile configs/mmmu_val_v1.json
+```
+
+새 프로필 실행은 `manifest.json`에 평가 signature를 기록하고 프로필 사본도 결과 폴더에
+저장합니다. 이후 base 모델과 fine-tuned checkpoint를 비교할 때 `compare_runs.py`는 두
+signature가 같은지 먼저 검사합니다. 해상도나 프롬프트처럼 설정 차이 자체가 실험 변수인
+ablation만 `--allow-config-differences`를 명시합니다.
 
 SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하고, 그 안에서
 위의 가상환경 활성화/폴더 이동/평가 명령을 실행하세요. Ctrl-B 다음 D로 분리합니다.
@@ -166,9 +182,10 @@ SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하�
 - 30개 과목 전체에서 각각 30개인지, 문항 ID 900개가 유일한지 검증.
 - Qwen Instruct 공식 평가 recipe: temperature 0.7, top_p 0.8, top_k 20,
   repetition_penalty 1.0, presence_penalty 1.5, seed 3407. 추론당 답변 1개.
-- 시작값: batch 2, 전체 문맥 8192 tokens, 출력 최대 256 tokens,
-  이미지당 min_pixels 65,536 / max_pixels 589,824, 최대 이미지 7장,
-  GPU memory utilization 0.85. 이는 작은 초기 실행을 위한 공학적 선택이며 최적 설정이 아닙니다.
+- 탐색 시작값은 batch 2, 이미지당 min_pixels 65,536 / max_pixels 589,824였습니다.
+  고정 `mmmu_val_v1`은 900문항 실험 결과에 따라 batch 1, 전체 문맥 8192 tokens,
+  출력 최대 256 tokens, min_pixels 1,003,520 / max_pixels 4,014,080,
+  최대 이미지 7장, GPU memory utilization 0.85를 사용합니다.
 - 이미지의 실제 가로/세로는 모델 processor가 종횡비와 patch 규칙에 맞춰 처리합니다.
   이미지를 항상 768×768 정사각형으로 만드는 설정은 아닙니다.
 - 출력 상한은 `--max-tokens`, 문맥 길이는 `--max-model-len`, 해상도는
@@ -193,7 +210,8 @@ datasets의 Arrow 캐시 위치를 바꾸려면 별도 `--cache-dir`을 사용�
 
 ## 저장되는 결과
 
-- `manifest.json`: revision/실행 인자/환경/소스 hash/데이터 fingerprint/성공·실패 상태
+- `manifest.json`: revision/실행 인자/환경/소스 hash/평가 signature/데이터 fingerprint/성공·실패 상태
+- `evaluation_profile.json`: 고정 프로필을 사용한 실행의 프로필 사본
 - `predictions.jsonl`: 문항별 원문 응답, 추출 답, 정답, 파싱 모드, 토큰 수, 종료 사유
 - `inputs.jsonl`: 정답·해설이 없는 실제 사용자 메시지(이미지 바이너리는 생략), 이미지 번호/크기/hash
 - `chat_template.txt`: 모델의 실제 chat template
@@ -220,14 +238,15 @@ CUDA_VISIBLE_DEVICES로 다른 GPU를 사용하면 `--monitor-gpu`에 그 물리
 팀 정보/환경 설명/설정 근거/1000자 이내 격차 분석을 직접 완성합니다.
 
 완료된 실행을 제출 구조로 복사하려면 다음 명령을 사용합니다. 900문항이 아니면 스크립트가
-중단합니다.
+중단합니다. 또한 현재 `mmmu_val_v1` 프로필 hash가 없는 이전 결과나 프로필 밖 설정의
+결과도 제출용으로 복사하지 않습니다.
 
 ```bash
-python scripts/prepare_submission.py results/baseline900_final --name baseline900_final
+python scripts/prepare_submission.py results/baseline900_v1 --name baseline900_v1
 ```
 
 이 명령은 최신 Gist 경로인 `reports/mmmu_baseline.md`, 실험 증거 파일을 담은
-`artifacts/baseline900_final/`, 이전 PDF 경로와의 호환 링크인
+`artifacts/baseline900_v1/`, 이전 PDF 경로와의 호환 링크인
 `assignment/assignment1.md`를 만듭니다. 생성 후 TODO와 gap analysis를 사람이 완성해야 합니다.
 환경 파일과 평가 코드를 함께 포함하고, 실행 커맨드의 경로와 옵션을 최종 설정에 맞춥니다.
 주관식과 객관식, 이미지 참조 및 미파싱 샘플을 사람이 검토하세요.
