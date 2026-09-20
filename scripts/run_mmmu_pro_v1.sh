@@ -25,8 +25,8 @@ python -u eval_mmmu_pro.py \
   --output-dir "$output_dir" \
   --limit 0 \
   --batch-size 1 \
-  --max-tokens 256 \
-  --max-model-len 8192 \
+  --max-tokens 2048 \
+  --max-model-len 9048 \
   --min-pixels 1003520 \
   --max-pixels 4014080 \
   --gpu-memory-utilization 0.85 \

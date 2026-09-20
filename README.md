@@ -202,6 +202,11 @@ paired 결과에는 정확도 변화, 답변 변화율, correct→wrong/wrong→
 MMMU-Pro는 test-only 1,730문항을 세 가지 형태로 제공합니다. 현재 데이터 revision과
 평가 설정은 `configs/mmmu_pro_v1.json`에 고정했습니다.
 
+이 프로필은 강의자료의 RTX 4090 권장값인 전체 문맥 9,048 tokens와 출력 최대
+2,048 tokens를 사용합니다. Qwen upstream 재현 설정은 Instruct 모델에 더 긴 출력 상한을
+사용하지만, 여기서는 과제 조건과 실행 비용을 맞추기 위해 2,048을 평가 상한으로 고정합니다.
+상한까지 최종 선택지를 내지 못한 응답은 모델의 지시 이행 실패로 보고 오답 처리합니다.
+
 - `standard-4`: 원래 4개 선택지
 - `standard-10`: 같은 문항에 distractor를 늘린 10개 선택지
 - `vision`: 질문과 선택지를 이미지 안에 넣은 vision-only 형식
@@ -239,7 +244,10 @@ python -u eval_mmmu_pro.py \
 ```
 
 두 실행에서 `unparsed`, `length_limited`, 입력 이미지 수와 원문 응답을 확인한 뒤 전체를
-실행합니다. smoke는 고정 제출 프로필이 아니므로 결과를 최종 점수와 합치지 않습니다.
+실행합니다. 일부 Qwen3-VL-4B-Instruct 응답은 direct 지시에도 2,048 tokens까지 풀이를
+반복할 수 있습니다. 이 경우 토큰 상한을 계속 늘리거나 미완성 응답의 중간 선택지를
+정답으로 복구하지 않습니다. smoke는 고정 제출 프로필이 아니므로 결과를 최종 점수와
+합치지 않습니다.
 
 고정 베이스라인은 세 번 실행합니다. 실행마다 모델을 새로 로드하므로 각각 별도 tmux에서
 순차적으로 수행합니다.
@@ -285,6 +293,9 @@ SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하�
 - 30개 과목 전체에서 각각 30개인지, 문항 ID 900개가 유일한지 검증.
 - Qwen Instruct 공식 평가 recipe: temperature 0.7, top_p 0.8, top_k 20,
   repetition_penalty 1.0, presence_penalty 1.5, seed 3407. 추론당 답변 1개.
+- MMMU-Pro 고정 프로필은 강의자료의 RTX 4090 권장값에 맞춰 전체 문맥 9048 tokens와
+  출력 최대 2048 tokens를 사용합니다. 선택지 제한 디코딩은 공식 direct prompt보다
+  강한 제약이므로 베이스라인에 사용하지 않고, 필요하면 별도 ablation으로 보고합니다.
 - 탐색 시작값은 batch 2, 이미지당 min_pixels 65,536 / max_pixels 589,824였습니다.
   고정 `mmmu_val_v1`은 900문항 실험 결과에 따라 batch 1, 전체 문맥 8192 tokens,
   출력 최대 256 tokens, min_pixels 1,003,520 / max_pixels 4,014,080,

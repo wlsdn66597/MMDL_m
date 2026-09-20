@@ -16,8 +16,8 @@
   "locked_arguments": {
     "limit": 0,
     "batch_size": 1,
-    "max_tokens": 256,
-    "max_model_len": 8192,
+    "max_tokens": 2048,
+    "max_model_len": 9048,
     "min_pixels": 1003520,
     "max_pixels": 4014080,
     "gpu_memory_utilization": 0.85
