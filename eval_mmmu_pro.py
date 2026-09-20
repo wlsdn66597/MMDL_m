@@ -3,7 +3,7 @@
 import argparse
 import ast
 import base64
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
@@ -70,9 +70,10 @@ def pro_parse(raw, choices):
 
 def build_message(ex, setting):
     options = parse_options(ex["options"])
-    expected_options = 4 if setting == "standard-4" else 10
-    if len(options) != expected_options:
-        raise ValueError(f"{ex['id']}: expected {expected_options} options, got {len(options)}")
+    # Setting names describe benchmark construction, not a row-level invariant.
+    # The pinned data includes 5-option standard-4 and 9-option standard-10/vision rows.
+    if not 2 <= len(options) <= 10:
+        raise ValueError(f"{ex['id']}: unsupported option count {len(options)}")
     choices = {chr(65 + index): option for index, option in enumerate(options)}
     if setting == "vision":
         images = [(1, ex.get("image"))]
@@ -110,6 +111,7 @@ def build_message(ex, setting):
     return ([{"role": "user", "content": content}], choices, {
         "messages_without_image_bytes": [{"role": "user", "content": audit_content}],
         "images": metadata,
+        "option_count": len(options),
     })
 
 
@@ -318,6 +320,7 @@ def run(args, outdir, manifest):
                 correct = parsed is not None and parsed == ex["answer"]
                 row = {"id": ex["id"], "subject": ex["subject"],
                        "question_type": "multiple-choice", "answer": ex["answer"],
+                       "option_count": len(choices),
                        "raw_response": generated.text, "parsed_answer": parsed,
                        "correct": bool(correct), "parsing": info,
                        "output_tokens": len(generated.token_ids),
@@ -336,6 +339,7 @@ def run(args, outdir, manifest):
     subjects, domains, correct, accuracy = aggregate(rows, seconds_by_subject)
     return {"setting": args.setting, "n": len(rows), "correct": correct, "accuracy": accuracy,
             "complete_1730": len(rows) == EXPECTED_ROWS, "subjects": subjects, "domains": domains,
+            "option_count_distribution": dict(sorted(Counter(row["option_count"] for row in rows).items())),
             "macro_subject_accuracy": sum(row["accuracy"] for row in subjects) / len(subjects),
             "unparsed": sum("unparsed" in row["parsing"]["mode"] for row in rows),
             "ambiguous_mc": sum(len(set(row["parsing"]["candidates"])) > 1 for row in rows),
@@ -355,7 +359,8 @@ def make_report(outdir, manifest, summary):
              f"| Batch | {args['batch_size']} |", "", "## Result", "",
              "| Setting | N | Correct | Accuracy |", "|---|---:|---:|---:|",
              f"| {args['setting']} | {summary['n']} | {summary['correct']} | {100*summary['accuracy']:.2f}% |",
-             "", "Official MMMU-Pro aggregation is instance-level (micro) accuracy.", "",
+             "", "Official MMMU-Pro aggregation is instance-level (micro) accuracy.",
+             f"Observed option counts: `{summary['option_count_distribution']}`. Setting names are nominal; scoring uses each row's actual options.", "",
              "## Domains", "", "| Domain | N | Correct | Accuracy |", "|---|---:|---:|---:|"]
     lines += [f"| {row['domain']} | {row['n']} | {row['correct']} | {100*row['accuracy']:.2f}% |"
               for row in summary["domains"]]

@@ -58,6 +58,15 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("(A) 0", text)
         self.assertEqual(len(choices), 10)
 
+        standard["options"] = "['one', 'two', 'three', 'four', 'five']"
+        _, choices, audit = pro_runner.build_message(standard, "standard-4")
+        self.assertEqual(len(choices), 5)
+        self.assertEqual(audit["option_count"], 5)
+        vision["options"] = [str(i) for i in range(9)]
+        _, choices, audit = pro_runner.build_message(vision, "vision")
+        self.assertEqual(len(choices), 9)
+        self.assertEqual(audit["option_count"], 9)
+
     def test_mmmu_pro_parser_and_paired_correctness(self):
         choices = {chr(65 + index): str(index) for index in range(10)}
         parsed, info = pro_runner.pro_parse("Reasoning. Answer: J", choices)
