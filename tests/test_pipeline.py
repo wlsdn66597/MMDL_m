@@ -62,10 +62,11 @@ class PipelineTests(unittest.TestCase):
         _, choices, audit = pro_runner.build_message(standard, "standard-4")
         self.assertEqual(len(choices), 5)
         self.assertEqual(audit["option_count"], 5)
-        vision["options"] = [str(i) for i in range(9)]
+        vision["options"] = [str(i) for i in range(12)]
         _, choices, audit = pro_runner.build_message(vision, "vision")
-        self.assertEqual(len(choices), 9)
-        self.assertEqual(audit["option_count"], 9)
+        self.assertEqual(len(choices), 12)
+        self.assertEqual(audit["option_count"], 12)
+        self.assertIn("L", choices)
 
     def test_mmmu_pro_parser_and_paired_correctness(self):
         choices = {chr(65 + index): str(index) for index in range(10)}

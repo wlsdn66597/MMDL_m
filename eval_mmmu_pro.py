@@ -71,8 +71,9 @@ def pro_parse(raw, choices):
 def build_message(ex, setting):
     options = parse_options(ex["options"])
     # Setting names describe benchmark construction, not a row-level invariant.
-    # The pinned data includes 5-option standard-4 and 9-option standard-10/vision rows.
-    if not 2 <= len(options) <= 10:
+    # The pinned data includes 5-option standard-4 and up to 12-option
+    # standard-10/vision rows. Only the A-Z single-letter representation is assumed.
+    if not 2 <= len(options) <= 26:
         raise ValueError(f"{ex['id']}: unsupported option count {len(options)}")
     choices = {chr(65 + index): option for index, option in enumerate(options)}
     if setting == "vision":
