@@ -199,6 +199,36 @@ paired 결과에는 정확도 변화, 답변 변화율, correct→wrong/wrong→
 
 ### MMMU-Pro 3설정 베이스라인
 
+4096/8192 출력 예산 비교는 아래 별도 스크립트로 실행합니다. 두 예산 모두 문맥 길이
+16384, batch 1 및 같은 프롬프트/해상도/샘플링을 사용합니다. 각 1730문항씩 총 6개 실행을
+순차 처리하고 각 예산의 3설정 보고서와 예산 간 paired 비교를 자동 생성합니다.
+기존 2048/9048 결과는 보존합니다. 기존 결과와의 비교에는 문맥 길이 차이도 있습니다.
+MMMU-Pro에서 두 예산을 비교한 사실을 보고하고, 최종 설정 선택은 개발 데이터에서 합니다.
+
+```bash
+cd ~/mmdl/MMDL
+source ../.venv-mmdl/bin/activate
+mkdir -p logs
+nohup bash scripts/run_mmmu_pro_token_sweep.sh results/mmmu_pro_tokens_v1 \
+  > logs/mmmu_pro_tokens_v1.nohup.log 2>&1 < /dev/null &
+echo $!
+```
+
+SSH 종료 후에도 실행됩니다. 다른 GPU 작업이 끝난 뒤 한 번만 시작하세요.
+출력 루트가 이미 있으면 거절하며 기존 결과를 덮어쓰거나 자동 재개하지 않습니다.
+오류 발생 시 그 단계에서 중단합니다. GPU 메모리 및 최대 이미지 입력과 8192 출력의
+문맥 수용 여부는 서버에서 확인해야 하며, 오류 시 설정을 자동 축소하지 않습니다.
+
+```bash
+cat results/mmmu_pro_tokens_v1/status.txt
+tail -n 40 -f logs/mmmu_pro_tokens_v1.nohup.log
+# 완료 후:
+cat results/mmmu_pro_tokens_v1/reports/generation_summary.tsv
+```
+
+상태가 `complete`이면 6개 실행과 보고서 생성까지 완료입니다. `failed:`이면
+전체 로그 또는 출력 루트의 `logs/`에서 해당 실행 로그를 확인하세요.
+
 MMMU-Pro는 test-only 1,730문항을 세 가지 형태로 제공합니다. 현재 데이터 revision과
 평가 설정은 `configs/mmmu_pro_v1.json`에 고정했습니다.
 
