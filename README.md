@@ -89,27 +89,31 @@ python scripts/compare_runs.py \
 `--min-pixels 262144 --max-pixels 1310720`으로 새 출력 디렉터리에서 실행합니다.
 실패한 실행과 다른 설정의 결과를 합치지 않습니다.
 
-해상도를 하나 고른 다음 프롬프트만 비교합니다. 두 실행 모두 출력 상한을 1024로 맞춰
+해상도를 하나 고른 다음 프롬프트만 비교합니다. 두 실행 모두 출력 상한을 512로 맞춰
 프롬프트 외 조건을 동일하게 유지합니다.
 
 ```bash
 bash scripts/run_mmmu_eval.sh \
   --model-path Qwen/Qwen3-VL-4B-Instruct --data-root MMMU/MMMU \
-  --limit-per-subject 2 --prompt-style direct --max-tokens 1024 \
+  --limit-per-subject 2 --prompt-style direct --max-tokens 512 \
   --min-pixels 262144 --max-pixels 1310720 --batch-size 1 \
   --output-dir results/ab60_prompt_direct
 
 bash scripts/run_mmmu_eval.sh \
   --model-path Qwen/Qwen3-VL-4B-Instruct --data-root MMMU/MMMU \
-  --limit-per-subject 2 --prompt-style cot --max-tokens 1024 \
+  --limit-per-subject 2 --prompt-style cot-brief --max-tokens 512 \
   --min-pixels 262144 --max-pixels 1310720 --batch-size 1 \
-  --output-dir results/ab60_prompt_cot
+  --output-dir results/ab60_prompt_cot_brief
 
 python scripts/compare_runs.py \
-  results/ab60_prompt_direct results/ab60_prompt_cot \
-  --label-a direct --label-b cot \
+  results/ab60_prompt_direct results/ab60_prompt_cot_brief \
+  --label-a direct --label-b cot_brief \
   --output reports/ab_prompt.md
 ```
+
+`cot`은 제한 없는 단계별 풀이를 위한 진단 옵션입니다. 제출 후보 비교에는 세 단계 이내의
+풀이와 명시적 종료를 요구하는 `cot-brief`를 사용합니다. `length_limited`가 발생하면 전체
+900문항으로 확대하지 않습니다.
 
 60문항은 설정 선택용입니다. 최종 점수는 선택한 설정으로 900문항을 새로 실행합니다.
 

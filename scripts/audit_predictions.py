@@ -20,7 +20,7 @@ def main():
     modes = Counter(row["parsing"]["mode"] for row in rows)
     finishes = Counter(row["finish_reason"] for row in rows)
     tokens = [row["output_tokens"] for row in rows]
-    ambiguous = [row for row in rows if len(row["parsing"].get("candidates", [])) > 1]
+    ambiguous = [row for row in rows if len(set(row["parsing"].get("candidates", []))) > 1]
     unparsed = [row for row in rows if "unparsed" in row["parsing"]["mode"]]
     limited = [row for row in rows if row["finish_reason"] == "length"]
     print(f"rows={len(rows)} unique_ids={unique} correct={sum(row['correct'] for row in rows)} accuracy={sum(row['correct'] for row in rows)/len(rows):.6f}")

@@ -57,6 +57,13 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("Final answer: (X)", text)
         self.assertNotIn("SECRET_GOLD", json.dumps(messages))
 
+    def test_brief_cot_prompt_limits_reasoning_and_stops(self):
+        messages, _, _ = runner.build_message(example(), prompt_style="cot-brief")
+        text = messages[0]["content"][-1]["text"]
+        self.assertIn("at most three short steps", text)
+        self.assertIn("Stop immediately", text)
+        self.assertIn("Final answer: (X)", text)
+
     def test_missing_image_in_option_raises(self):
         ex = example()
         ex["options"] = "['<image 3>', 'second']"

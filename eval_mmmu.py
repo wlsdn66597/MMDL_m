@@ -69,6 +69,16 @@ COT_OPEN_TEMPLATE = (
     "Question: {question}\n\n"
     "Solve the problem step by step. End with `Final answer: <answer>`."
 )
+BRIEF_COT_MC_TEMPLATE = (
+    "Question: {question}\n\nChoices:\n{choices}\n\n"
+    "Reason briefly in at most three short steps. Then write exactly one final line in the form "
+    "`Final answer: (X)`, replacing X with the single best option letter. Stop immediately after that line."
+)
+BRIEF_COT_OPEN_TEMPLATE = (
+    "Question: {question}\n\n"
+    "Reason briefly in at most three short steps. Then write exactly one final line in the form "
+    "`Final answer: <answer>`. Stop immediately after that line."
+)
 
 
 def prompt_templates(style):
@@ -76,6 +86,8 @@ def prompt_templates(style):
         return MC_TEMPLATE, OPEN_TEMPLATE
     if style == "cot":
         return COT_MC_TEMPLATE, COT_OPEN_TEMPLATE
+    if style == "cot-brief":
+        return BRIEF_COT_MC_TEMPLATE, BRIEF_COT_OPEN_TEMPLATE
     raise ValueError(f"Unknown prompt style: {style}")
 
 
@@ -231,7 +243,7 @@ def arguments():
                         help="0 = full 900; positive = development subset only")
     parser.add_argument("--check-only", action="store_true", help="Check selected inputs without loading model")
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--prompt-style", choices=("direct", "cot"), default="direct",
+    parser.add_argument("--prompt-style", choices=("direct", "cot", "cot-brief"), default="direct",
                         help="direct answer-only prompt or step-by-step prompt with an explicit final answer")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--max-model-len", type=int, default=8192)
@@ -490,7 +502,7 @@ def run(args, outdir, manifest):
                 question_types=question_types, macro_accuracy=macro, micro_accuracy=micro,
                 complete_900=len(all_rows) == 900,
                 unparsed=sum("unparsed" in row["parsing"]["mode"] for row in all_rows),
-                ambiguous_mc=sum(len(row["parsing"]["candidates"]) > 1 for row in all_rows),
+                ambiguous_mc=sum(len(set(row["parsing"]["candidates"])) > 1 for row in all_rows),
                 length_limited=sum(row["finish_reason"] == "length" for row in all_rows),
                 model_load_seconds=model_seconds)
 
