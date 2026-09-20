@@ -73,8 +73,11 @@ def main():
         lines.append(f"| {name} | {row['n']} | {100*row['accuracy_a']:.2f}% | "
                      f"{100*row['accuracy_b']:.2f}% | {100*row['delta']:+.2f} pp | "
                      f"{row['a_only']} | {row['b_only']} | {row['mcnemar_exact_p']:.4f} |")
-    lines += ["", "A/B are paired by question ID. A small development subset is diagnostic only; "
-                    "use the full 900-question run for the submitted baseline."]
+    if len(ids) == 900:
+        lines += ["", "A/B are paired across the complete 900-question MMMU validation split."]
+    else:
+        lines += ["", "A/B are paired by question ID. A development subset is diagnostic only; "
+                        "use the full 900-question run for the submitted baseline."]
     output = "\n".join(lines) + "\n"
     print(output, end="")
     if args.output:
