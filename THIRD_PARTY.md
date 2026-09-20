@@ -10,6 +10,18 @@
 `vendor/mmmu_eval_utils.py` is an unmodified copy from the commit above.
 The upstream license is included as `vendor/MMMU_LICENSE`.
 
+## MMMU-Pro
+
+- Dataset: `MMMU/MMMU_Pro`, revision
+  `563f3e84bb3b90893083a1f039cfa13077f2302b` (Apache-2.0).
+- Dataset card: https://huggingface.co/datasets/MMMU/MMMU_Pro
+- Official direct prompts: https://github.com/MMMU-Benchmark/MMMU/blob/main/mmmu-pro/prompts.yaml
+- Official evaluation reference: https://github.com/MMMU-Benchmark/MMMU/blob/main/mmmu-pro/evaluate.py
+
+`eval_mmmu_pro.py` uses the official direct prompt text and instance-level accuracy. Its multiple-choice
+parser is deterministic: it preserves the official answer-pattern precedence but treats an unparsed response
+as wrong instead of applying the official random-choice fallback.
+
 `mc_parse()` in `eval_mmmu.py` adapts the upstream multiple-choice parser:
 explicit final-answer and exact-letter responses are checked first, followed by the
 same bracket / standalone-letter / option-text matching order;

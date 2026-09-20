@@ -10,6 +10,7 @@ import sys
 
 MODEL_REV = "ebb281ec70b05090aa6165b016eac8ec08e71b17"
 DATA_REV = "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68"
+PRO_DATA_REV = "563f3e84bb3b90893083a1f039cfa13077f2302b"
 
 
 def main():
@@ -65,6 +66,8 @@ def main():
             show("Model weights", (snapshot / "model.safetensors").is_file(), "single-file checkpoint or index required")
         data = hub / "datasets--MMMU--MMMU" / "snapshots" / DATA_REV
         show("Dataset revision cached", data.is_dir(), str(data))
+        pro_data = hub / "datasets--MMMU--MMMU_Pro" / "snapshots" / PRO_DATA_REV
+        show("MMMU-Pro revision cached", pro_data.is_dir(), str(pro_data))
         print("INFO | Dataset snapshot presence does not verify all 900 rows; use eval_mmmu.py --check-only for that.")
     except Exception as exc:
         show("HF cache inspection", False, str(exc))

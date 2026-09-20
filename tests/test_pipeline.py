@@ -11,10 +11,12 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import eval_mmmu as runner
+import eval_mmmu_pro as pro_runner
 from scripts.compare_runs import config_differences
 from scripts.analyze_research_metrics import (
     input_features, paired_metric, render_markdown, summarize_run, wilson_interval,
 )
+from scripts.summarize_mmmu_pro import paired_correctness
 from vendor.mmmu_eval_utils import eval_open, parse_open_response
 
 
@@ -36,6 +38,39 @@ def example(identifier="test", question_type="multiple-choice"):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_mmmu_pro_standard_and_vision_messages_do_not_leak_gold(self):
+        standard = {
+            "id": "pro-1", "question": "Compare <image 1>.",
+            "options": "['one', 'two', 'three', 'four']", "answer": "B",
+            "explanation": "SECRET_GOLD_EXPLANATION", "image_1": TinyImage(),
+        }
+        messages, choices, audit = pro_runner.build_message(standard, "standard-4")
+        serialized = json.dumps(messages)
+        self.assertNotIn("SECRET_GOLD", serialized)
+        self.assertIn("[Image 1]", serialized)
+        self.assertEqual(len(choices), 4)
+        self.assertEqual(len(audit["images"]), 1)
+        vision = {"id": "pro-2", "options": [str(i) for i in range(10)],
+                  "answer": "J", "image": TinyImage()}
+        messages, choices, _ = pro_runner.build_message(vision, "vision")
+        text = messages[0]["content"][-1]["text"]
+        self.assertIn("Answer: $LETTER", text)
+        self.assertNotIn("(A) 0", text)
+        self.assertEqual(len(choices), 10)
+
+    def test_mmmu_pro_parser_and_paired_correctness(self):
+        choices = {chr(65 + index): str(index) for index in range(10)}
+        parsed, info = pro_runner.pro_parse("Reasoning. Answer: J", choices)
+        self.assertEqual(parsed, "J")
+        self.assertEqual(info["mode"], "explicit_answer")
+        rows_a = {"1": {"correct": True}, "2": {"correct": False}}
+        rows_b = {"1": {"correct": False}, "2": {"correct": True}}
+        metric = paired_correctness(rows_a, rows_b, ["1", "2"])
+        self.assertEqual(metric["delta_b_minus_a_pp"], 0.0)
+        self.assertEqual(metric["a_only"], 1)
+        self.assertEqual(metric["b_only"], 1)
+        self.assertEqual(metric["mcnemar_exact_p"], 1.0)
+
     def test_research_metrics_image_references_and_paired_transitions(self):
         input_row = {
             "images": [{"number": 1}, {"number": 2}],

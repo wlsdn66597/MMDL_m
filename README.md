@@ -197,6 +197,74 @@ paired 결과에는 정확도 변화, 답변 변화율, correct→wrong/wrong→
 모델이 실제로 시각적 근거를 사용했다는 인과 증거는 아닙니다. 그 판단은 이후 이미지
 제거·교체·순서 변경 같은 통제된 paired 실험으로 측정합니다.
 
+### MMMU-Pro 3설정 베이스라인
+
+MMMU-Pro는 test-only 1,730문항을 세 가지 형태로 제공합니다. 현재 데이터 revision과
+평가 설정은 `configs/mmmu_pro_v1.json`에 고정했습니다.
+
+- `standard-4`: 원래 4개 선택지
+- `standard-10`: 같은 문항에 distractor를 늘린 10개 선택지
+- `vision`: 질문과 선택지를 이미지 안에 넣은 vision-only 형식
+
+먼저 각 설정의 입력 1,730개를 GPU 없이 검사합니다. 서로 다른 출력 폴더를 사용합니다.
+`scripts/check_env.py`에서 새 MMMU-Pro revision 캐시가 FAIL이면 아래 첫 명령이 해당 고정
+revision을 받아오게 됩니다. 기존 Arrow 데이터가 재사용될 수 있지만 네트워크 연결은 필요합니다.
+
+```bash
+python -u eval_mmmu_pro.py --check-only \
+  --setting standard-4 --output-dir results/mmmu_pro_check_standard4
+
+python -u eval_mmmu_pro.py --check-only \
+  --setting standard-10 --output-dir results/mmmu_pro_check_standard10
+
+python -u eval_mmmu_pro.py --check-only \
+  --setting vision --output-dir results/mmmu_pro_check_vision
+```
+
+전체 실행 전 Standard와 Vision 메시지 경로를 각각 소량 추론합니다. 이 결과는 성능 수치로
+사용하지 않습니다.
+
+```bash
+python -u eval_mmmu_pro.py \
+  --setting standard-10 --limit 10 \
+  --output-dir results/mmmu_pro_smoke_standard10
+
+python -u eval_mmmu_pro.py \
+  --setting vision --limit 10 \
+  --output-dir results/mmmu_pro_smoke_vision
+```
+
+두 실행에서 `unparsed`, `length_limited`, 입력 이미지 수와 원문 응답을 확인한 뒤 전체를
+실행합니다. smoke는 고정 제출 프로필이 아니므로 결과를 최종 점수와 합치지 않습니다.
+
+고정 베이스라인은 세 번 실행합니다. 실행마다 모델을 새로 로드하므로 각각 별도 tmux에서
+순차적으로 수행합니다.
+
+```bash
+bash scripts/run_mmmu_pro_v1.sh standard-4 results/mmmu_pro_standard4_v1
+bash scripts/run_mmmu_pro_v1.sh standard-10 results/mmmu_pro_standard10_v1
+bash scripts/run_mmmu_pro_v1.sh vision results/mmmu_pro_vision_v1
+```
+
+세 실행이 끝나면 동일 ID의 정오답 전이를 묶어 하나의 보고서를 생성합니다.
+
+```bash
+python scripts/summarize_mmmu_pro.py \
+  --standard-4 results/mmmu_pro_standard4_v1 \
+  --standard-10 results/mmmu_pro_standard10_v1 \
+  --vision results/mmmu_pro_vision_v1 \
+  --output-prefix reports/mmmu_pro_baseline
+```
+
+`standard-4→standard-10`은 추가 distractor 민감도, `standard-10→vision`은 질문과 선택지를
+이미지에서 읽는 OCR·시각 입력 부담을 나타냅니다. 두 차이는 동일 ID의 paired accuracy와
+exact McNemar 검정으로 보고합니다.
+
+MMMU-Pro는 최종 일반화 지표이므로 이 실행을 **학습 전 베이스라인으로 동결**합니다.
+개별 test 정답·오답을 보고 학습 데이터, epoch 또는 하이퍼파라미터를 고르지 않습니다.
+학습 방향과 오류 유형은 MMMU validation 결과 및 별도 개발 데이터에서 결정하고,
+MMMU-Pro는 학습 전 한 번과 최종 checkpoint 한 번만 비교하는 것을 원칙으로 합니다.
+
 SSH 접속이 끊길 수 있으면 먼저 `tmux new -s mmmu_eval`을 실행하고, 그 안에서
 위의 가상환경 활성화/폴더 이동/평가 명령을 실행하세요. Ctrl-B 다음 D로 분리합니다.
 다시 접속할 때는 `tmux attach -t mmmu_eval`입니다.
