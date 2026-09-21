@@ -25,6 +25,7 @@ def main():
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     expected_manifest = {
+        "mc_parser_policy": profile["mc_parser_policy"],
         "data_revision": profile["dataset_revision"],
         "parser_revision": profile["parser_revision"],
     }

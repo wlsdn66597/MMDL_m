@@ -199,6 +199,33 @@ paired 결과에는 정확도 변화, 답변 변화율, correct→wrong/wrong→
 
 ### MMMU-Pro 3설정 베이스라인
 
+#### 기존 출력의 파서 v2 재채점 (GPU 불필요)
+
+문자 경계(`is`/`Cannot`의 첫 글자 오인), Markdown 강조, 줄바꿈 최종답 및 명시적
+답변 거부 처리를 수정했습니다. 생성 조건은 그대로이며 파서 정책만 v2로 기록합니다.
+기존 결과를 덮어쓰지 않고 별도 폴더에 새 predictions/summary/signature와 changes.json을
+만듭니다. 실행 시간은 원래 추론 시간이며 재채점 시간은 rescore.json에 별도 저장합니다.
+
+```bash
+python scripts/rescore_mmmu_pro.py \
+  results/mmmu_pro_tokens_v1/tokens4096_standard-4 \
+  results/mmmu_pro_tokens_v1/tokens4096_standard-10 \
+  results/mmmu_pro_tokens_v1/tokens4096_vision \
+  results/mmmu_pro_tokens_v1/tokens8192_standard-4 \
+  results/mmmu_pro_tokens_v1/tokens8192_standard-10 \
+  results/mmmu_pro_tokens_v1/tokens8192_vision \
+  --output-root results/mmmu_pro_tokens_parser_v2
+
+cat results/mmmu_pro_tokens_parser_v2/rescore_summary.md
+```
+
+2048 결과도 같은 명령에 해당 실행 폴더들을 지정해 별도 output-root로 재채점할 수 있습니다.
+비교 보고서를 다시 만들 때는 양쪽 모두 재채점된 폴더를 사용하세요.
+기존 vision 로그에는 선택지 원문이 없어 기존 fallback 결과를 보존하면서 명시적 답변
+파싱만 보수적으로 수리합니다. 표준 설정은 저장된 입력에서 선택지를 복원합니다.
+이 보존 전략은 rescore.json에 기록됩니다. 새 실행은 선택지 원문도 저장합니다.
+이 도구는 MMMU-Pro 전용이며 MMMU validation 재채점에는 사용하지 않습니다.
+
 4096/8192 출력 예산 비교는 아래 별도 스크립트로 실행합니다. 두 예산 모두 문맥 길이
 16384, batch 1 및 같은 프롬프트/해상도/샘플링을 사용합니다. 각 1730문항씩 총 6개 실행을
 순차 처리하고 각 예산의 3설정 보고서와 예산 간 paired 비교를 자동 생성합니다.

@@ -1,4 +1,5 @@
 {
+  "mc_parser_policy": "deterministic-no-random-fallback-v2",
   "profile_name": "mmmu_val_v1",
   "description": "Fixed MMMU validation pipeline selected after the full 900-question resolution experiment.",
   "pipeline_version": "mmmu-val-v1",

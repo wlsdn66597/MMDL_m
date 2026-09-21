@@ -17,17 +17,17 @@ import shlex
 import sys
 import time
 import traceback
+from mc_parser import PARSER_POLICY, parse_pro
 
 from eval_mmmu import (
     DOMAIN_CAT2SUB_CAT, GpuMonitor, MODEL, MODEL_REV, RECIPE, RECIPE_URL,
-    canonical_sha256, command_output, image_as_rgb, mc_parse, write_json,
+    canonical_sha256, command_output, image_as_rgb, write_json,
 )
 
 
 DATASET = "MMMU/MMMU_Pro"
 DATA_REV = "563f3e84bb3b90893083a1f039cfa13077f2302b"
 PIPELINE_VERSION = "mmmu-pro-v1"
-PARSER_POLICY = "deterministic-no-random-fallback-v1"
 IMAGE_LAYOUT_VERSION = "numbered-images-prefix-v1"
 EXPECTED_ROWS = 1730
 SETTINGS = {
@@ -56,16 +56,7 @@ def prompt_for(setting):
 
 
 def pro_parse(raw, choices):
-    valid = "".join(re.escape(choice) for choice in choices)
-    explicit = re.findall(
-        rf"(?:final\s+answer|answer)\s*[:：]\s*\(?([{valid}])\)?",
-        raw,
-        flags=re.I,
-    )
-    if explicit:
-        answer = explicit[-1].upper()
-        return answer, {"mode": "explicit_answer", "candidates": explicit}
-    return mc_parse(raw, choices)
+    return parse_pro(raw, choices)
 
 
 def build_message(ex, setting):
@@ -113,6 +104,7 @@ def build_message(ex, setting):
         "messages_without_image_bytes": [{"role": "user", "content": audit_content}],
         "images": metadata,
         "option_count": len(options),
+        "choices": choices,
     })
 
 
@@ -313,15 +305,12 @@ def run(args, outdir, manifest):
             per_subject = batch_seconds / len(examples)
             for ex, (_, choices, _), output in zip(examples, prepared, outputs):
                 generated = output.outputs[0]
-                parsed, info = pro_parse(generated.text, choices)
-                if generated.finish_reason == "length" and info["mode"] not in (
-                        "explicit_answer", "explicit_final", "exact_letter"):
-                    info = {"mode": "truncated_unparsed", "candidates": info["candidates"]}
-                    parsed = None
+                parsed, info = parse_pro(generated.text, choices, generated.finish_reason)
                 correct = parsed is not None and parsed == ex["answer"]
                 row = {"id": ex["id"], "subject": ex["subject"],
                        "question_type": "multiple-choice", "answer": ex["answer"],
                        "option_count": len(choices),
+                       "choices": choices,
                        "raw_response": generated.text, "parsed_answer": parsed,
                        "correct": bool(correct), "parsing": info,
                        "output_tokens": len(generated.token_ids),
@@ -392,6 +381,7 @@ def main():
                 "platform": platform.platform(),
                 "command": shlex.join(["python", "-u", "eval_mmmu_pro.py"] + sys.argv[1:]),
                 "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "mc_parser_sha256": hashlib.sha256(Path(__file__).with_name('mc_parser.py').read_bytes()).hexdigest(),
                 "data_revision": DATA_REV, "recipe": RECIPE, "recipe_source": RECIPE_URL,
                 "prompt": prompt_for(args.setting), "prompt_source": PROMPT_SOURCE,
                 "evaluation_profile": ({"name": profile["profile_name"], "path": str(profile_path),

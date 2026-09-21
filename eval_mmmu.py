@@ -21,6 +21,7 @@ import time
 import traceback
 
 from PIL import Image
+from mc_parser import PARSER_POLICY as MC_PARSER_POLICY, parse_mc
 
 # Must be set before importing vLLM; matches the working server environment.
 os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
@@ -118,6 +119,7 @@ def load_evaluation_profile(path):
 def validate_evaluation_profile(profile, args):
     """Reject a run when a locked evaluation setting differs from the named profile."""
     invariants = {
+        "mc_parser_policy": MC_PARSER_POLICY,
         "pipeline_version": EVALUATION_PIPELINE_VERSION,
         "dataset_revision": DATA_REV,
         "parser_revision": PARSER_REV,
@@ -140,6 +142,7 @@ def evaluation_signature(args, profile_sha256=None):
     """Settings that must match for a controlled model/checkpoint comparison."""
     mc_prompt, open_prompt = prompt_templates(args.prompt_style)
     config = {
+        "mc_parser_policy": MC_PARSER_POLICY,
         "pipeline_version": EVALUATION_PIPELINE_VERSION,
         "dataset_revision": DATA_REV,
         "parser_revision": PARSER_REV,
@@ -175,43 +178,7 @@ def image_as_rgb(img):
 
 
 def mc_parse(raw, choices):
-    """Adapted MMMU rules, with deterministic failure instead of random guessing."""
-    valid = "".join(re.escape(choice) for choice in choices)
-    explicit = re.findall(
-        rf"final\s+(?:answer|decision)\s*[:：]?\s*\(?([{valid}])\)?",
-        raw,
-        flags=re.I,
-    )
-    if explicit:
-        answer = explicit[-1].upper()
-        return answer, {"mode": "explicit_final", "candidates": explicit}
-    compact = raw.strip().strip("*`_ ")
-    exact = re.fullmatch(rf"\(?([{valid}])\)?[.。]?", compact, flags=re.I)
-    if exact:
-        answer = exact.group(1).upper()
-        return answer, {"mode": "exact_letter", "candidates": [answer]}
-    response = raw
-    for char in [",", ".", "!", "?", ";", ":", "'"]:
-        response = response.strip(char)
-    response = " " + response + " "
-    candidates = [c for c in choices if f"({c})" in response]
-    mode = "bracket"
-    if not candidates:
-        candidates = [c for c in choices if f" {c} " in response]
-        mode = "letter"
-    if not candidates and len(response.split()) > 5:
-        candidates = [c for c, answer in choices.items()
-                      if answer and answer.lower() in response.lower()]
-        mode = "option_text"
-    if not candidates:
-        return None, {"mode": "unparsed", "candidates": []}
-    def position(c):
-        if mode == "bracket":
-            return response.rfind(f"({c})")
-        if mode == "letter":
-            return response.rfind(f" {c} ")
-        return response.lower().rfind(choices[c].lower())
-    return max(candidates, key=position), {"mode": mode, "candidates": candidates}
+    return parse_mc(raw, choices, allow_answer_marker=True)
 
 
 def build_message(ex, prompt_style="direct"):
@@ -604,6 +571,8 @@ def main():
                     arguments=vars(args), packages=packages, python=sys.version, platform=platform.platform(),
                     command=shlex.join(["python", "-u", "eval_mmmu.py"] + sys.argv[1:]),
                     script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                    mc_parser_sha256=hashlib.sha256(Path(__file__).with_name('mc_parser.py').read_bytes()).hexdigest(),
+                    mc_parser_policy=MC_PARSER_POLICY,
                     recipe=RECIPE, recipe_source=RECIPE_URL, data_revision=DATA_REV,
                     parser_revision=PARSER_REV, mc_prompt=mc_prompt, open_prompt=open_prompt,
                     evaluation_pipeline_version=EVALUATION_PIPELINE_VERSION,

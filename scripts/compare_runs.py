@@ -142,7 +142,9 @@ def main():
         lines.append(f"| {name} | {row['n']} | {100*row['accuracy_a']:.2f}% | "
                      f"{100*row['accuracy_b']:.2f}% | {100*row['delta']:+.2f} pp | "
                      f"{row['a_only']} | {row['b_only']} | {row['mcnemar_exact_p']:.4f} |")
-    if len(ids) == 900:
+    if config_a and config_a.get('benchmark') == 'MMMU-Pro test':
+        lines += ["", f"A/B are paired across {len(ids)} MMMU-Pro test questions; the full setting has 1,730 questions."]
+    elif len(ids) == 900:
         lines += ["", "A/B are paired across the complete 900-question MMMU validation split."]
     else:
         lines += ["", "A/B are paired by question ID. A development subset is diagnostic only; "
