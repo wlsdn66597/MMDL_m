@@ -3,6 +3,73 @@
 기존 서버의 `LLM.chat()` 스모크 테스트 방식을 사용합니다. 환경 설치, 드라이버 변경,
 파일 삭제, 학습은 하지 않습니다. 실제 GPU 실행은 사용자 서버에서 검증해야 합니다.
 
+## 출력 정책 3조건 비교 (개발 실험)
+
+`eval_output_policy.py`는 기존 평가 프로필과 분리된 실험 러너입니다. 기본 데이터는
+MMMU validation의 **객관식만**이며, 각 과목에서 ID와 seed의 해시 순서로 4개씩 선택합니다.
+정답/오답을 보고 선택하지 않습니다. 표본 ID와 이미지 수 분포를 저장하며, 세 조건의
+ID·원래 메시지·이미지 해시·정답·샘플링·해상도·모델이 일치해야 비교 보고서를 생성합니다.
+과목별 동일 개수 표본은 개발 진단용이며 900문항의 문항 유형 비율을 재현하지 않습니다.
+
+| 모드 | 실행 | 기본 출력 예산 |
+|---|---|---|
+| `free` | 기존 direct 프롬프트로 자유 생성 | 8192 |
+| `constrained` | 같은 direct 입력에 문항별 선택지 문자 제약 | 16 |
+| `two-stage` | 짧은 풀이 후, 원본 이미지와 풀이를 보고 선택지 문자 제약 | 풀이 1024 + 최종 16 |
+
+세 조건 모두 BF16, batch 1, context 16384, 동일 Qwen sampling recipe와 강의 해상도를
+사용합니다. 선택지는 실제 개수에 맞춰 A부터 생성하며 12개 선택지도 지원합니다.
+제약은 프롬프트 부탁이 아니라 vLLM `StructuredOutputsParams(choice=...)`로 적용합니다.
+형식 제약이 어겨지면 실패하며 자유 생성으로 조용히 대체하지 않습니다.
+
+두 단계에서는 원본 이미지가 최종 호출에도 유지됩니다. 풀이가 상한에 도달해도 최종
+선택을 진행하되, 풀이 잘림과 최종 출력 잘림을 따로 기록합니다. 정답 라벨은 생성 호출에
+전달하지 않습니다. `predictions.jsonl`의 `stages`에 두 응답·실제 샘플링·토큰·시간이 남습니다.
+총 출력 토큰과 추론 시간은 두 호출의 합이며, 모델 로드 포함 시간도 별도로 보고합니다.
+출력 예산이 의도적으로 다른 **방법/비용 비교**이며 동일 계산량의 ablation은 아닙니다.
+
+```bash
+cd ~/mmdl/MMDL
+source ../.venv-mmdl/bin/activate
+mkdir -p logs
+nohup bash scripts/run_output_policy_ablation.sh results/output_policy_dev120_v1 \
+  --per-subject 4 --max-tokens 8192 --reasoning-tokens 1024 --final-tokens 16 \
+  > logs/output_policy_dev120_v1.nohup.log 2>&1 < /dev/null &
+echo $!
+```
+
+세 모드를 한 GPU에서 순차 실행하며 모델은 모드마다 새로 로드합니다. 기존 출력 루트가
+있으면 중단합니다. 실패/중단된 폴더를 자동 이어 붙이지 않으며 새 이름으로 실행합니다.
+문맥 초과나 OOM은 기록 후 중단하고 입력/해상도/출력 예산을 자동 축소하지 않습니다.
+
+```bash
+cat results/output_policy_dev120_v1/status.txt
+tail -n 40 -f logs/output_policy_dev120_v1.nohup.log
+# complete 이후:
+cat results/output_policy_dev120_v1/comparison.md
+```
+
+GPU 없이 입력 경로만 확인할 때는 아래처럼 별도 폴더에서 실행합니다.
+
+```bash
+python eval_output_policy.py --mode two-stage --check-only \
+  --per-subject 4 --output-dir results/output_policy_input_check_v1
+```
+
+모드 하나만 실행할 때는 `--mode constrained` 또는 `--mode two-stage`를 사용합니다.
+`--per-subject 0`은 MMMU validation 객관식 전체(847개)를 선택하고 주관식은 제외합니다.
+현재 개발 실험에는 MMMU-Pro vision 화면 형태가 포함되지 않습니다. 그 형식까지
+일반화한다고 결론 내리기 전에 별도 개발용 화면 이미지에서 검증해야 합니다.
+
+최종 정책 고정 후 Pro 실험에도 같은 러너를 사용할 수 있습니다:
+`--benchmark mmmu-pro --setting standard-4|standard-10|vision --per-subject 0`.
+이는 명시적으로 요청한 test ablation으로 구분하며, 기본 스크립트는 Pro를 실행하지 않습니다.
+과거 MMMU-Pro 점수와 이번 MMMU 개발 표본 점수를 직접 비교하지 않습니다. 새로운 정책을
+최종 평가에 채택하면 base와 fine-tuned 모델 모두 동일 정책으로 비교해야 합니다.
+
+새 러너의 제약 디코딩은 로컬 CPU 테스트로 호출/채점 흐름을 검증했습니다. 실제 설치된
+vLLM의 제약 백엔드 및 4090에서의 GPU 동작은 서버 실행 결과로 확인해야 합니다.
+
 ## 시작
 
 기존 가상환경은 그대로 사용하고, 코드만 별도 폴더에 clone합니다.
