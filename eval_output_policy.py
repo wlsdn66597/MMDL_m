@@ -29,6 +29,15 @@ SELECT_INSTRUCTION = (
 )
 
 
+def paired_input_fingerprint(details):
+    """Fields recorded by both legacy MMMU-Pro runs and new policy runs."""
+    core = {key: details[key] for key in
+            ("messages_without_image_bytes", "images", "option_count") if key in details}
+    if "messages_without_image_bytes" not in core or "images" not in core:
+        raise ValueError("Input audit is missing messages or images")
+    return val.canonical_sha256(core)
+
+
 def select_indices(ids, types, count, seed):
     """Outcome-independent, stable sample within each subject, MC only."""
     indices = [i for i, kind in enumerate(types) if kind == "multiple-choice"]
@@ -210,7 +219,7 @@ def run(args, outdir, manifest):
                 raise ValueError(f"Gold answer not in option set: {ex['id']}")
             image_counts[len(details["images"])] += 1
             # Common input hash excludes labels and output policy; validates paired inputs.
-            input_hash = val.canonical_sha256(details)
+            input_hash = paired_input_fingerprint(details)
             entry = {"id": ex["id"], "subject": subject, "choices": choices,
                      **details, "input_sha256": input_hash}
             if args.mode == "two-stage":

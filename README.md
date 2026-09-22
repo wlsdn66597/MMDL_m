@@ -5,6 +5,49 @@
 
 ## 출력 정책 3조건 비교 (개발 실험)
 
+### 현재 MMMU-Pro 전체 결과와 비교
+
+파싱·종료 실패에 대한 최종 ablation은 이미 생성한 parser-v2 8192-token 자유 생성 결과를
+그대로 사용합니다. `run_mmmu_pro_output_policy_ablation.sh`는 `free`를 다시 추론하지 않고,
+각 설정의 1,730문항에 대해 `constrained`와 `two-stage`만 실행합니다. 총 6개 새 실행입니다.
+기존 결과 폴더는 읽기만 하며 새 출력 루트에 보고서를 생성합니다.
+
+```bash
+cd ~/mmdl/MMDL
+source ../.venv-mmdl/bin/activate
+mkdir -p logs
+nohup bash scripts/run_mmmu_pro_output_policy_ablation.sh \
+  results/mmmu_pro_output_policy_full_v1 \
+  results/mmmu_pro_tokens_parser_v2 \
+  > logs/mmmu_pro_output_policy_full_v1.nohup.log 2>&1 < /dev/null &
+echo $!
+```
+
+두 번째 인자는 parser-v2 결과의 루트이며 아래 세 디렉터리가 있어야 합니다.
+
+- `tokens8192_standard-4`
+- `tokens8192_standard-10`
+- `tokens8192_vision`
+
+시작 전에 기존 baseline이 1,730개 전체인지, 완료 상태인지, 평가 signature와 입력 파일이
+있는지 검사합니다. 각 비교 단계에서는 ID, 정답, 문항 유형, 선택지 수, 프롬프트, 원본
+이미지 해시, 모델 revision, dataset revision, sampling, 해상도, context가 일치하는지도
+검사합니다. 기존 vision 로그에는 선택지 원문이 없으므로, pinned dataset revision과
+선택지 수 및 이미지/프롬프트 해시로 입력 동일성을 확인합니다.
+
+```bash
+cat results/mmmu_pro_output_policy_full_v1/status.txt
+tail -n 40 -f logs/mmmu_pro_output_policy_full_v1.nohup.log
+# complete 이후:
+cat results/mmmu_pro_output_policy_full_v1/summary.tsv
+cat results/mmmu_pro_output_policy_full_v1/vision/comparison.md
+```
+
+이 실험은 MMMU-Pro test를 사용한 출력 정책 ablation으로 보고서에 공개합니다. 이 결과의
+문항별 오류를 보고 프롬프트나 학습 방법을 다시 반복 조정하지 않습니다.
+
+### 별도 소규모 개발 실험
+
 `eval_output_policy.py`는 기존 평가 프로필과 분리된 실험 러너입니다. 기본 데이터는
 MMMU validation의 **객관식만**이며, 각 과목에서 ID와 seed의 해시 순서로 4개씩 선택합니다.
 정답/오답을 보고 선택하지 않습니다. 표본 ID와 이미지 수 분포를 저장하며, 세 조건의
@@ -38,7 +81,7 @@ nohup bash scripts/run_output_policy_ablation.sh results/output_policy_dev120_v1
 echo $!
 ```
 
-세 모드를 한 GPU에서 순차 실행하며 모델은 모드마다 새로 로드합니다. 기존 출력 루트가
+소규모 명령은 세 모드를 한 GPU에서 순차 실행하며 모델은 모드마다 새로 로드합니다. 기존 출력 루트가
 있으면 중단합니다. 실패/중단된 폴더를 자동 이어 붙이지 않으며 새 이름으로 실행합니다.
 문맥 초과나 OOM은 기록 후 중단하고 입력/해상도/출력 예산을 자동 축소하지 않습니다.
 

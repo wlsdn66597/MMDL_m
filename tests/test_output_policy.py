@@ -9,9 +9,10 @@ from unittest.mock import patch
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from eval_output_policy import generate_policy, stage_messages, select_indices, summarize, REASON_INSTRUCTION, run
+from eval_output_policy import (generate_policy, paired_input_fingerprint, stage_messages,
+                                select_indices, summarize, REASON_INSTRUCTION, run)
 from eval_mmmu import canonical_sha256, write_json
-from scripts.summarize_output_policies import report
+from scripts.summarize_output_policies import load_external_baseline, report
 
 
 class Params:
@@ -134,7 +135,7 @@ class OutputPolicyTests(unittest.TestCase):
                 folder.mkdir()
                 draft = mode == 'two-stage'
                 row = dict(id='q', subject='Math', question_type='multiple-choice', answer='B',
-                           choices=self.choices, input_sha256='same', parsed_answer='B', correct=True,
+                           choices=self.choices, option_count=12, input_sha256='same', parsed_answer='B', correct=True,
                            finish_reason='stop', output_tokens=1025 if draft else 1,
                            batch_seconds=3 if draft else 1, reasoning_length_limited=draft,
                            any_stage_length_limited=draft, stages=[{}, {}] if draft else [{}])
@@ -153,3 +154,36 @@ class OutputPolicyTests(unittest.TestCase):
             (folder/'predictions.jsonl').write_text(json.dumps(row)+'\n', encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'Mismatched paired input'):
                 report(root)
+
+    def test_external_baseline_reuse_needs_complete_rescored_full_run(self):
+        details = {"messages_without_image_bytes": self.messages,
+                   "images": [{"number": 1, "width": 4, "height": 4, "png_sha256": "image"}],
+                   "option_count": 12}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/'methods'
+            baseline = Path(tmp)/'baseline'
+            root.mkdir(); baseline.mkdir()
+            common = dict(benchmark='MMMU-Pro test', setting='vision',
+                          dataset_revision='revision', sampling_recipe={}, prompt='prompt',
+                          max_model_len=16384, min_pixels=1003520, max_pixels=4014080,
+                          batch_size=1, gpu_memory_utilization=.85, dtype='bfloat16', quantization=None,
+                          model_path='model', model_revision='model-revision')
+            baseline_config = dict(common, max_tokens=8192)
+            baseline_row = dict(id='q', subject='Math', question_type='multiple-choice', answer='B',
+                                option_count=12, parsed_answer='B', correct=True, finish_reason='stop',
+                                output_tokens=3, batch_seconds=1, batch_size=1)
+            (baseline/'predictions.jsonl').write_text(json.dumps(baseline_row)+'\n', encoding='utf-8')
+            (baseline/'inputs.jsonl').write_text(json.dumps(dict(id='q', **details))+'\n', encoding='utf-8')
+            write_json(baseline/'summary.json', dict(n=1730, total_seconds=1))
+            write_json(baseline/'manifest.json', dict(status='complete', arguments=dict(
+                model_path='model', model_revision='model-revision'), rescoring=dict(
+                source_predictions_sha256='source'), evaluation_signature=dict(
+                config=baseline_config, sha256=canonical_sha256(baseline_config))))
+            # A one-row fixture is intentionally rejected before pairing.
+            with self.assertRaisesRegex(ValueError, '1,730'):
+                load_external_baseline(baseline)
+
+    def test_legacy_and_new_input_fingerprints_ignore_new_choice_copy(self):
+        legacy = {"messages_without_image_bytes": self.messages, "images": [], "option_count": 12}
+        current = dict(legacy, choices=self.choices)
+        self.assertEqual(paired_input_fingerprint(legacy), paired_input_fingerprint(current))
