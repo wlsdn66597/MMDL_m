@@ -3,7 +3,67 @@
 기존 서버의 `LLM.chat()` 스모크 테스트 방식을 사용합니다. 환경 설치, 드라이버 변경,
 파일 삭제, 학습은 하지 않습니다. 실제 GPU 실행은 사용자 서버에서 검증해야 합니다.
 
+## 현재 baseline: two-stage 4096, MMMU 전체 + MMMU-Pro 전체
+
+과제 요구 재점검과 설정 근거는 [프로토콜 문서](docs/baseline4096_protocol.md)에 정리했습니다.
+**4096은 풀이 단계 최대 토큰 수**입니다. 최종 답변은 별도 단계로 생성하며,
+객관식은 실제 선택지 문자로 제한(최대 16토큰), 주관식은 짧은 답(최대 128토큰)을 받습니다.
+MMMU 주관식은 공식 open-answer parser/evaluator로 채점합니다.
+
+| 순서 | 평가 | 문항 수 |
+|---|---|---:|
+| 1 | MMMU validation: 30과목 × 30문항, 객관식 847 + 주관식 53 | 900 |
+| 2 | MMMU-Pro standard-4 | 1730 |
+| 3 | MMMU-Pro standard-10 | 1730 |
+| 4 | MMMU-Pro vision | 1730 |
+
+모든 입력을 먼저 검사한 뒤 네 번의 GPU 평가를 **순차 실행**합니다. 기존 free/1024 결과는 재실행하지 않습니다.
+새 4096 조건은 네 평가의 전체 문항을 새로 추론합니다. 최종 실패도 분모에 포함하고,
+풀이 잘림·최종 답변 잘림·파싱 실패를 구분해서 기록합니다.
+
+```bash
+cd ~/mmdl/MMDL
+git pull --ff-only
+source ../.venv-mmdl/bin/activate
+mkdir -p logs
+nohup bash scripts/run_two_stage_baseline4096.sh \
+  results/two_stage4096_v1 \
+  > logs/two_stage4096_v1.nohup.log 2>&1 < /dev/null &
+echo $!
+```
+
+진행 및 완료 확인:
+
+```bash
+tail -n 40 -f logs/two_stage4096_v1.nohup.log
+# 위 로그 화면은 Ctrl+C로 종료해도 nohup 작업은 계속 실행됨
+cat results/two_stage4096_v1/status.txt
+# complete 이후 실제 예측 파일을 다시 검증하고 요약:
+python scripts/summarize_two_stage_baseline.py results/two_stage4096_v1
+cat results/two_stage4096_v1/baseline_summary.md
+```
+
+`--resume`는 검증된 완료 실행만 건너뜁니다. 미완료 폴더는 조용히 덮어쓰거나 이어붙이지 않고 중단합니다.
+일부 실행이 실패했다면 로그를 확인하고, 해당 미완료 폴더를 별도로 보관한 후 같은 코드/설정으로 재시도하세요.
+기존 루트의 코드·모델·데이터 경로가 달라지면 재개를 거부합니다. 새 조건은 새 결과 루트를 사용합니다.
+
+MMMU 제출 파일 준비(실행 완료 후, 추론 추가 없음):
+
+```bash
+python scripts/prepare_submission.py \
+  results/two_stage4096_v1/mmmu_val --name mmmu_val_two_stage4096_v1
+```
+
+`reports/mmmu_baseline.md`와 `artifacts/mmmu_val_two_stage4096_v1/`가 생성됩니다.
+보고서의 팀 정보·1,000자 이내 gap analysis는 결과 확인 후 작성해야 합니다. 자동 커밋/제출은 하지 않습니다.
+모델/데이터 경로는 `--model-path`, `--model-revision`, `--mmmu-data-root`, `--pro-data-root`로 지정할 수 있습니다.
+학습 후에는 병합된 BF16 체크포인트 경로만 바꾸고 같은 프로토콜을 사용합니다.
+원격 데이터는 revision을 고정하며, 로컬은 해당 revision 이름의 HF dataset snapshot 경로를 받습니다.
+로컬 경로와 fingerprint도 기록합니다.
+
 ## 출력 정책 3조건 비교 (개발 실험)
+
+> 아래는 이전 1024-token/객관식 중심 ablation입니다. 현재 전체 baseline 실행은 위의 4096 프로토콜을 사용합니다.
 
 ### 현재 MMMU-Pro 전체 결과와 비교
 
