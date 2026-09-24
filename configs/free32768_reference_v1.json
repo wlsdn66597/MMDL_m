@@ -1,0 +1,21 @@
+{
+  "profile_name": "free32768_reference_v1",
+  "qwen_source_commit": "96588727e44c78b25ba03ea03b8e12f7e64fd0da",
+  "mmmu_revision": "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68",
+  "mmmu_pro_revision": "563f3e84bb3b90893083a1f039cfa13077f2302b",
+  "sampling_recipe": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repetition_penalty": 1.0, "presence_penalty": 1.5, "seed": 3407},
+  "max_tokens": 32768,
+  "max_model_len": 65536,
+  "min_pixels": 1003520,
+  "max_pixels": 4014080,
+  "gpu_memory_utilization": 0.85,
+  "max_num_seqs": 1,
+  "max_num_batched_tokens": 2048,
+  "enable_chunked_prefill": true,
+  "enforce_eager": true,
+  "dtype": "bfloat16",
+  "kv_cache_dtype": "auto",
+  "generation_calls_per_question": 1,
+  "prompt_policy": "qwen-reference-image-prefix-v1",
+  "scoring_policy": "deterministic-no-random-fallback-v2; official MMMU open parser; separate optional Qwen judge"
+}

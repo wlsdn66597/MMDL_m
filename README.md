@@ -3,7 +3,16 @@
 기존 서버의 `LLM.chat()` 스모크 테스트 방식을 사용합니다. 환경 설치, 드라이버 변경,
 파일 삭제, 학습은 하지 않습니다. 실제 GPU 실행은 사용자 서버에서 검증해야 합니다.
 
-## 현재 baseline: two-stage 4096, MMMU 전체 + MMMU-Pro 전체
+## 새 free 재평가: 공식 프롬프트 참고, 출력 상한 32768
+
+`bash scripts/run_free32768_reference.sh results/free32768_reference_v1`로
+MMMU validation 900문항(주관식 53 포함)과 MMMU-Pro 세 설정 전체를 순차 실행합니다.
+문항당 자유 생성 한 번이며, 컨텍스트는 65536입니다. 중단 후 `--resume`으로 이어갈 수 있습니다.
+기존 free/two-stage 결과는 보존합니다. 공식 채점과의 차이, nohup 실행·결과 확인,
+선택적인 judge 재채점은 [재현 프로토콜](docs/free32768_reproduction.md)을 확인하세요.
+실험 remote는 `wlsdn66597/MMDL_m`이며 제출용 private `MMDL`과 별개입니다.
+
+## 기존 baseline: two-stage 4096, MMMU 전체 + MMMU-Pro 전체
 
 과제 요구 재점검과 설정 근거는 [프로토콜 문서](docs/baseline4096_protocol.md)에 정리했습니다.
 **4096은 풀이 단계 최대 토큰 수**입니다. 최종 답변은 별도 단계로 생성하며,
