@@ -115,7 +115,9 @@ def count_input_tokens(processor, messages, p):
         if item["type"] == "image_url":
             payload = item["image_url"]["url"].split(",", 1)[1]
             images.append(Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB"))
-    prompt_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # Transformers may normalize image_url parts to type=image in-place. vLLM.chat
+    # rejects that type, so token counting must never mutate the request it will use.
+    prompt_text = processor.apply_chat_template(deepcopy(messages), tokenize=False, add_generation_prompt=True)
     encoded = processor(text=[prompt_text], images=images, return_tensors=None,
                         min_pixels=p["min_pixels"], max_pixels=p["max_pixels"])
     count = len(encoded["input_ids"][0])

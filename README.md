@@ -5,7 +5,7 @@
 
 ## 새 free 재평가: 공식 프롬프트 참고, 출력 상한 32768
 
-`bash scripts/run_free32768_reference.sh results/free32768_reference_v1`로
+`bash scripts/run_free32768_reference.sh results/free32768_reference_v2`로
 MMMU validation 900문항(주관식 53 포함)과 MMMU-Pro 세 설정 전체를 순차 실행합니다.
 문항당 자유 생성 한 번이며, 컨텍스트는 65536입니다. 중단 후 `--resume`으로 이어갈 수 있습니다.
 기존 free/two-stage 결과는 보존합니다. 공식 채점과의 차이, nohup 실행·결과 확인,

@@ -104,6 +104,15 @@ vLLM `LLM.chat`의 HF processor에 동일 픽셀 제한을 준다. 이미지 표
 
 실험 저장소는 `wlsdn66597/MMDL_m`이다. 새 제출용 private `MMDL`과 구분한다.
 서버 폴더 이름은 기존 `~/mmdl/MMDL`을 그대로 써도 된다.
+첫 배포의 `free32768_reference_v1`은 입력 길이 검사 중 HF processor가 채팅 메시지의
+이미지 유형을 바꾸면서 vLLM이 `Unsupported chat content part type: 'image'`로 중단될 수 있다.
+수정본은 길이 검사용 메시지를 별도 복사해 원본을 보존한다. 코드 해시를 고정하는 재개
+계약 때문에 v1 폴더를 수정본으로 이어 쓰지 않고 아래의 새 v2 폴더를 사용한다.
+이전 폴더의 결과는 삭제하지 않는다. 기존 완료 건수는 다음과 같이 확인한다.
+
+```bash
+wc -l results/free32768_reference_v1/mmmu_val/predictions.jsonl 2>/dev/null || echo 'saved predictions: 0'
+```
 
 ```bash
 cd ~/mmdl/MMDL
@@ -112,8 +121,8 @@ git pull --ff-only
 source ../.venv-mmdl/bin/activate
 mkdir -p logs
 nohup bash scripts/run_free32768_reference.sh \
-  results/free32768_reference_v1 \
-  > logs/free32768_reference_v1.nohup.log 2>&1 < /dev/null &
+  results/free32768_reference_v2 \
+  > logs/free32768_reference_v2.nohup.log 2>&1 < /dev/null &
 echo $!
 ```
 
@@ -122,12 +131,14 @@ echo $!
 이 스크립트 자체에는 패키지 설치, 학습, judge API 호출이 없다.
 
 ```bash
-tail -n 40 -f logs/free32768_reference_v1.nohup.log
+tail -n 40 -f logs/free32768_reference_v2.nohup.log
 # tail 화면은 Ctrl+C로 종료해도 실제 nohup 작업은 유지됨
-cat results/free32768_reference_v1/status.txt
+cat results/free32768_reference_v2/status.txt
+pgrep -af 'python.*(run_free_reproduction|eval_free_reproduction)\.py' || true
+wc -l results/free32768_reference_v2/mmmu_val/predictions.jsonl 2>/dev/null || true
 # complete 이후:
-python scripts/summarize_free_reproduction.py results/free32768_reference_v1
-cat results/free32768_reference_v1/summary.tsv
+python scripts/summarize_free_reproduction.py results/free32768_reference_v2
+cat results/free32768_reference_v2/summary.tsv
 ```
 
 사전 입력 검사만 하려면 동일 실행기에 `--preflight-only`를 붙인다.
@@ -135,8 +146,8 @@ cat results/free32768_reference_v1/summary.tsv
 
 ```bash
 nohup bash scripts/run_free32768_reference.sh \
-  results/free32768_reference_v1 --resume \
-  >> logs/free32768_reference_v1.nohup.log 2>&1 < /dev/null &
+  results/free32768_reference_v2 --resume \
+  >> logs/free32768_reference_v2.nohup.log 2>&1 < /dev/null &
 ```
 
 같은 root의 중복 실행은 파일 잠금으로 막는다. 완료 문항은 재검증 후 건너뛴다.

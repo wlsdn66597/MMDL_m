@@ -81,6 +81,22 @@ class FreeTests(unittest.TestCase):
             free.generate_one(llm, [], {}, "open", free.profile(), Params, 32769)
         self.assertFalse(llm.calls)
 
+    def test_processor_mutation_does_not_change_vllm_chat_message(self):
+        messages, _, _ = free.build_reference_message(example(), "mmmu-val", "standard")
+        class MutatingProcessor:
+            def apply_chat_template(self, request, **kwargs):
+                request[0]["content"][0]["type"] = "image"
+                return "fixture"
+            def __call__(self, *args, **kwargs):
+                return {"input_ids": [[1] * 20]}
+        count = free.count_input_tokens(MutatingProcessor(), messages, free.profile())
+        self.assertEqual(count, 20)
+        self.assertEqual(messages[0]["content"][0]["type"], "image_url")
+        llm = FakeLLM()
+        free.generate_one(llm, messages, {"A": "one", "B": "two"}, "multiple-choice",
+                          free.profile(), Params, count)
+        self.assertEqual(llm.calls[0][0][0]["content"][0]["type"], "image_url")
+
     def test_premature_length_stop_rejected(self):
         with self.assertRaisesRegex(ValueError, "shortened budget"):
             free.generate_one(FakeLLM(reason="length", count=10), [], {}, "open", free.profile(), Params, 20)
@@ -120,13 +136,23 @@ class FreeTests(unittest.TestCase):
                 return len(self.rows)
         class Processor:
             chat_template = "fixture"
-            def apply_chat_template(self, *args, **kwargs):
+            def apply_chat_template(self, messages, **kwargs):
+                messages[0]["content"][0]["type"] = "image"
                 return "fixture"
             def __call__(self, *args, **kwargs):
                 return {"input_ids": [[1]*20]}
         ds = Dataset()
         selection = [(ds, i, row["subject"]) for i, row in enumerate(ds.rows)]
         llm1, llm2 = FakeLLM(fail_at=3), FakeLLM()
+        def guarded_chat(llm):
+            original = llm.chat
+            def chat(messages, sampling_params, use_tqdm):
+                if messages[0]["content"][0]["type"] != "image_url":
+                    raise RuntimeError("vLLM rejected a mutated image part")
+                return original(messages, sampling_params, use_tqdm)
+            llm.chat = chat
+        guarded_chat(llm1)
+        guarded_chat(llm2)
         modules = {"huggingface_hub": NS(snapshot_download=lambda *a, **k: "unused"),
                    "transformers": NS(AutoProcessor=NS(from_pretrained=lambda _: Processor())),
                    "vllm": NS(LLM=lambda **kw: current[0], SamplingParams=Params)}
