@@ -2,6 +2,7 @@
 """Aggregate MMMU-val two-stage errors without inspecting test items or running inference."""
 import argparse
 from collections import Counter
+import hashlib
 from pathlib import Path
 import sys
 
@@ -40,9 +41,21 @@ def report(rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("baseline_dir", type=Path, help="Existing full two-stage MMMU-val run directory")
+    parser.add_argument("--show-truncated", type=int, default=0,
+                        help="Show this many deterministic examples of truncated draft endings")
+    parser.add_argument("--tail-chars", type=int, default=400)
     args = parser.parse_args()
+    if args.show_truncated < 0 or args.tail_chars < 1:
+        parser.error("--show-truncated must be nonnegative and --tail-chars must be positive")
     _, _, rows = validate_run(args.baseline_dir, "mmmu-val", "standard")
     print(report(rows))
+    truncated = sorted((row for row in rows if row["reasoning_length_limited"]),
+                       key=lambda row: hashlib.sha256(row["id"].encode()).hexdigest())
+    for row in truncated[:args.show_truncated]:
+        draft = row["stages"][0]["raw_response"]
+        print(f"\n[id={row['id']} type={row['question_type']} correct={row['correct']} "
+              f"draft_tokens={row['stages'][0]['output_tokens']}]\n"
+              f"...{draft[-args.tail_chars:]}")
 
 
 if __name__ == "__main__":

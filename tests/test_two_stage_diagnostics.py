@@ -11,6 +11,7 @@ from eval_output_policy import (REASON_INSTRUCTION, SELECT_INSTRUCTION,
                                 paired_input_fingerprint, stage_messages)
 from scripts.audit_two_stage_val import report
 from scripts.replay_two_stage_final_val import grouped_comparison, source_messages
+from scripts.rerun_truncated_drafts_val import combined_summary, target_indices
 
 
 class TwoStageDiagnosticTests(unittest.TestCase):
@@ -65,6 +66,26 @@ class TwoStageDiagnosticTests(unittest.TestCase):
         text = report(rows)
         self.assertIn("all                      n=  2 correct=  1 accuracy=50.00%", text)
         self.assertIn("draft_finish_reasons={'stop': 1, 'length': 1}", text)
+
+    def test_rerun_selects_only_truncated_and_combines_all_rows(self):
+        baseline = [
+            {"id": "a", "question_type": "multiple-choice", "correct": True,
+             "reasoning_length_limited": False, "stages": [{"finish_reason": "stop"}]},
+            {"id": "b", "question_type": "multiple-choice", "correct": False,
+             "reasoning_length_limited": True, "stages": [{"finish_reason": "length"}]},
+            {"id": "c", "question_type": "open", "correct": True,
+             "reasoning_length_limited": False, "stages": [{"finish_reason": "stop"}]},
+        ]
+        self.assertEqual(target_indices(baseline), [1])
+        rerun = dict(baseline[1], correct=True, reasoning_length_limited=False,
+                     finish_reason="stop", parsed_answer="B")
+        summary = combined_summary(baseline, {"b": rerun}, 30, 15)
+        self.assertEqual(summary["n"], 3)
+        self.assertEqual(summary["combined_correct"], 3)
+        self.assertEqual(summary["rerun_only_correct"], 1)
+        self.assertEqual(summary["adaptive_inference_seconds"], 45)
+        with self.assertRaisesRegex(ValueError, "only the truncated"):
+            combined_summary(baseline, {"a": rerun}, 30, 15)
 
 
 if __name__ == "__main__":
