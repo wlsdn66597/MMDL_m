@@ -12,6 +12,33 @@ MMMU validation 900문항(주관식 53 포함)과 MMMU-Pro 세 설정 전체를 
 선택적인 judge 재채점은 [재현 프로토콜](docs/free32768_reproduction.md)을 확인하세요.
 실험 remote는 `wlsdn66597/MMDL_m`이며 제출용 private `MMDL`과 별개입니다.
 
+## MMMU validation 전체 8192-token two-stage 후보
+
+4096 결과에서 풀이가 잘린 120문항만 다시 돌리는 실험은 원인 진단용입니다.
+제출할 새 baseline 후보는 `configs/two_stage8192_val_v1.json`으로 고정하여
+**900문항 모두에 동일한 풀이 상한 8192토큰**을 적용합니다. 최종 답은 기존과
+같은 두 번째 호출(MC 16토큰 제약, open 128토큰)에서 만듭니다.
+모델과 MMMU 데이터의 revision은 기존과 동일하게 고정됩니다.
+
+```bash
+cd ~/mmdl/MMDL
+git pull --ff-only
+source ../.venv-mmdl/bin/activate
+mkdir -p logs
+nohup bash scripts/run_two_stage_baseline8192_val.sh \
+  results/two_stage8192_val_v1 \
+  --model-path Qwen/Qwen3-VL-4B-Instruct \
+  --data-root MMMU/MMMU \
+  > logs/two_stage8192_val_v1.nohup.log 2>&1 < /dev/null &
+```
+
+`cat results/two_stage8192_val_v1/status.txt`가 `complete`이면
+`results/two_stage8192_val_v1/mmmu_val/summary.json`과 `report_draft.md`를 확인합니다.
+`report_draft.md`는 수치와 실제 설정 확인용 초안입니다. 제출용 private repo의
+`reports/mmmu_baseline.md`는 [과제 제출 템플릿](https://gist.github.com/neur-lab/483852e1f9d8d52f54627e600677c2f9)의
+1–8번 항목 순서로 작성하고, 두 단계의 프롬프트·생성 예산·호출 횟수 및 전체 시간을
+명시해야 합니다. 학습 전후 비교에는 선택한 동일 프로토콜을 유지합니다.
+
 ## 기존 baseline: two-stage 4096, MMMU 전체 + MMMU-Pro 전체
 
 과제 요구 재점검과 설정 근거는 [프로토콜 문서](docs/baseline4096_protocol.md)에 정리했습니다.

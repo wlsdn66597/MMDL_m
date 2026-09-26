@@ -36,7 +36,7 @@ def main():
     if summary.get("n") != 900 or not summary.get("complete_900"):
         raise SystemExit("Refusing to prepare a submission from an incomplete run")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("evaluation_profile", {}).get("name") == "two_stage4096_v1":
+    if manifest.get("evaluation_profile", {}).get("name") in ("two_stage4096_v1", "two_stage8192_val_v1"):
         from baseline_contract import validate_run
         validate_run(result_dir, "mmmu-val", "standard", require_base=True)
     else:

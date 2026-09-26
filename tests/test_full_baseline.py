@@ -14,7 +14,7 @@ import eval_mmmu as val
 from eval_output_policy import (arguments, configuration, generate_policy, score_answer, select_indices,
                                 summarize, paired_input_fingerprint, run)
 from baseline_contract import (check_coverage, aggregate_rows, load_profile, validate_profile, validate_run,
-                               write_report, RUNS, PROFILE_PATH)
+                               write_report, RUNS, PROFILE_PATH, PROFILE_8192_PATH)
 from scripts.summarize_two_stage_baseline import summarize_suite, check_preflight
 
 
@@ -48,15 +48,15 @@ def full_metadata(benchmark):
     return [{"id": f"test_Math_{i}", "subject": "Math", "question_type": "multiple-choice"} for i in range(1730)]
 
 
-def args_for(benchmark="mmmu-val", setting="standard"):
-    return NS(**load_profile()["locked_arguments"], benchmark=benchmark, setting=setting,
+def args_for(benchmark="mmmu-val", setting="standard", profile_path=PROFILE_PATH):
+    return NS(**load_profile(profile_path)["locked_arguments"], benchmark=benchmark, setting=setting,
               model_path=val.MODEL, model_revision=val.MODEL_REV, open_unused=None,
               check_only=False, data_root=None, checked_inputs=None)
 
 
-def write_fixture(folder, benchmark, setting):
+def write_fixture(folder, benchmark, setting, profile_path=PROFILE_PATH):
     folder.mkdir()
-    args = args_for(benchmark, setting)
+    args = args_for(benchmark, setting, profile_path)
     rows, inputs = [], []
     for meta in full_metadata(benchmark):
         is_open = meta["question_type"] == "open"
@@ -71,7 +71,7 @@ def write_fixture(folder, benchmark, setting):
                          any_stage_length_limited=False, stages=stages))
     config = configuration(args)
     config["selected_ids_sha256"] = val.canonical_sha256([r["id"] for r in rows])
-    profile = load_profile()
+    profile = load_profile(profile_path)
     manifest = dict(status="complete", arguments=vars(args), source_n=len(rows), selected_n=len(rows),
                     evaluation_profile=dict(name=profile["profile_name"], sha256=val.canonical_sha256(profile)),
                     evaluation_signature=dict(config=config, sha256=val.canonical_sha256(config)),
@@ -117,6 +117,29 @@ class FullBaselineTests(unittest.TestCase):
         other = deepcopy(args)
         other.model_path = "trained-model"
         self.assertEqual(configuration(args), configuration(other))
+
+    def test_uniform_8192_profile_and_submission_validation(self):
+        argv = ["--mode", "two-stage", "--evaluation-profile", str(PROFILE_8192_PATH),
+                "--output-dir", "unused"]
+        args = arguments(argv)
+        self.assertEqual(args.reasoning_tokens, 8192)
+        self.assertEqual(args.per_subject, 0)
+        self.assertTrue(args.include_open and args.require_full)
+        with self.assertRaises(ValueError):
+            arguments(argv + ["--reasoning-tokens", "4096"])
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            folder = repo / "run"
+            manifest, summary, _ = write_fixture(folder, "mmmu-val", "standard", PROFILE_8192_PATH)
+            write_report(folder, manifest, summary)
+            self.assertIn("8192-token", (folder / "report_draft.md").read_text(encoding="utf-8"))
+            validate_run(folder, "mmmu-val", "standard", require_base=True)
+            import scripts.prepare_submission as prepare
+            with patch.object(prepare, "__file__", str(repo / "scripts" / "prepare_submission.py")), \
+                 patch.object(sys, "argv", ["prepare_submission.py", str(folder), "--name", "candidate8192"]), \
+                 redirect_stdout(io.StringIO()):
+                prepare.main()
+            self.assertTrue((repo / "artifacts" / "candidate8192" / "selected_ids.json").is_file())
 
     def test_open_generation_scores_final_only_and_keeps_images(self):
         messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "fake"}},

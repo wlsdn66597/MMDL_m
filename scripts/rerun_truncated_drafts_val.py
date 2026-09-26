@@ -122,6 +122,7 @@ def main(argv=None):
                                max_model_len=baseline_args.max_model_len)
     output_dir.mkdir(parents=True, exist_ok=False)
     manifest = {"status": "running", "started_utc": datetime.now(timezone.utc).isoformat(),
+                "purpose": "diagnostic_only_not_uniform_submission_baseline",
                 "baseline_dir": str(baseline_dir),
                 "baseline_manifest_sha256": hashlib.sha256((baseline_dir / "manifest.json").read_bytes()).hexdigest(),
                 "baseline_profile_sha256": baseline_manifest["evaluation_profile"]["sha256"],

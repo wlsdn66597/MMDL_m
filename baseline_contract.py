@@ -8,6 +8,9 @@ import eval_mmmu as val
 import eval_mmmu_pro as pro
 
 PROFILE_PATH = Path(__file__).parent / "configs" / "two_stage4096_v1.json"
+PROFILE_8192_PATH = Path(__file__).parent / "configs" / "two_stage8192_val_v1.json"
+PROFILE_PATHS = {"two_stage4096_v1": PROFILE_PATH,
+                 "two_stage8192_val_v1": PROFILE_8192_PATH}
 RUNS = (("mmmu_val", "mmmu-val", "standard"),
         ("standard-4", "mmmu-pro", "standard-4"),
         ("standard-10", "mmmu-pro", "standard-10"),
@@ -16,11 +19,14 @@ RUNS = (("mmmu_val", "mmmu-val", "standard"),
 
 def load_profile(path=PROFILE_PATH):
     profile = json.loads(Path(path).read_text(encoding="utf-8"))
-    if (profile.get("profile_name") != "two_stage4096_v1"
+    expected_budgets = {"two_stage4096_v1": 4096, "two_stage8192_val_v1": 8192}
+    name = profile.get("profile_name")
+    if (name not in expected_budgets
             or profile.get("sampling_recipe") != val.RECIPE
             or profile.get("mmmu_revision") != val.DATA_REV
             or profile.get("mmmu_pro_revision") != pro.DATA_REV
-            or profile.get("open_parser_revision") != val.PARSER_REV):
+            or profile.get("open_parser_revision") != val.PARSER_REV
+            or profile.get("locked_arguments", {}).get("reasoning_tokens") != expected_budgets.get(name)):
         raise ValueError("Unknown or incompatible two-stage profile")
     return profile
 
@@ -76,7 +82,10 @@ def validate_run(folder, benchmark, setting, require_base=False):
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
     args = SimpleNamespace(**manifest["arguments"])
-    profile = load_profile()
+    profile_name = manifest.get("evaluation_profile", {}).get("name")
+    if profile_name not in PROFILE_PATHS:
+        raise ValueError("Unknown two-stage profile")
+    profile = load_profile(PROFILE_PATHS[profile_name])
     validate_profile(profile, args)
     if manifest.get("status") != "complete" or (args.benchmark, args.setting) != (benchmark, setting):
         raise ValueError(f"Incomplete run or wrong setting: {folder}")
@@ -129,7 +138,8 @@ def write_report(outdir, manifest, summary):
     config = manifest["evaluation_signature"]["config"]
     is_val = args["benchmark"] == "mmmu-val"
     lines = ["# MMMU validation baseline" if is_val else f"# MMMU-Pro {args['setting']} baseline", "",
-             "Protocol: `two_stage4096_v1`. Separate 4096-token working draft and final answer.", "",
+             f"Protocol: `{manifest['evaluation_profile']['name']}`. Separate "
+             f"{args['reasoning_tokens']}-token working draft and final answer.", "",
              f"Model: `{args['model_path']}`; revision: `{args['model_revision']}`. BF16; no quantization.",
              f"Data source: `{args.get('data_root') or ('MMMU/MMMU' if is_val else pro.DATASET)}`.",
              f"Dataset revision (Hub source): `{config['dataset_revision']}`. Local sources require provenance verification.",
@@ -161,7 +171,7 @@ def write_report(outdir, manifest, summary):
               "MC final selection additionally restricts the distribution to the item's actual option letters (2–26). "
               "Open final answers are unconstrained short text (128 tokens), scored using the vendored official MMMU open parser/evaluator. "
               "Empty or length-truncated open final answers are incorrect; drafts are never scored as final answers.",
-              "4096 is a bounded draft budget selected for this protocol, not a course-mandated value. "
+              f"{args['reasoning_tokens']} is a bounded draft budget selected for this protocol, not a course-mandated value. "
               "MC final budget is 16, context is 16384 including input and both stages. Image range is 1280×28×28 to 5120×28×28. "
               "Batch size is one. All settings stay fixed before/after training; this method comparison is not equal-compute to prior free generation.",
               "", "## Reproduction and environment", "", "```json",
